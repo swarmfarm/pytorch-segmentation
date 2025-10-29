@@ -54,6 +54,7 @@ class KeymakrSegmentation(Dataset):
         self.class_to_index = {}
         self.index_to_class = {}
         self.index_to_color = {}
+        self.class_mapping = class_mapping  # User-defined class remapping
         self.num_classes = 0
         
         # Storage for image paths and annotation data
@@ -75,6 +76,7 @@ class KeymakrSegmentation(Dataset):
         """
         Scan all JSON files to build a global mapping from colors to class types.
         This ensures consistent class indices across all sequences.
+        If class_mapping is provided, remaps everything to user classes.
         """
         print("Building global color-to-class mapping...")
         
@@ -103,6 +105,7 @@ class KeymakrSegmentation(Dataset):
                 continue
         
         # Verify consistency: each type should map to exactly one color
+        original_color_to_class = {}
         for obj_type, colors in type_to_colors.items():
             if len(colors) > 1:
                 print(f"Warning: Type '{obj_type}' has multiple colors: {colors}")
@@ -110,15 +113,39 @@ class KeymakrSegmentation(Dataset):
             
             # Use the first color for this type
             color = list(colors)[0]
-            self.color_to_class[color] = obj_type
+            original_color_to_class[color] = obj_type
         
-        # Build class-to-index mapping (background = 0, classes start from 1)
-        unique_classes = sorted(set(self.color_to_class.values()))
+        # If class mapping is provided, remap everything to user classes
+        if self.class_mapping:
+            print("Applying class mapping to create user class mappings...")
+            
+            # Remap colors to user classes
+            self.color_to_class = {}
+            user_class_to_colors = defaultdict(list)
+            
+            for color, original_class in original_color_to_class.items():
+                # Only remap if explicitly mapped, otherwise keep original class
+                user_class = self.class_mapping.get(original_class, original_class)
+                self.color_to_class[color] = user_class
+                user_class_to_colors[user_class].append(color)
+            
+            # Get unique user classes (includes both mapped and unmapped original classes)
+            unique_classes = sorted(set(self.color_to_class.values()))
+            
+            print("User class color assignments:")
+            for user_class, colors in user_class_to_colors.items():
+                mapped_status = "mapped" if user_class in self.class_mapping.values() else "unmapped"
+                print(f"  - {user_class} ({mapped_status}): {colors}")
+        else:
+            # No mapping, use original classes
+            self.color_to_class = original_color_to_class
+            unique_classes = sorted(set(self.color_to_class.values()))
         
         # Remove 'background' if it exists, we'll handle it separately
         if 'background' in unique_classes:
             unique_classes.remove('background')
         
+        # Build class-to-index mapping (background = 0, classes start from 1)
         self.class_to_index = {cls: idx + 1 for idx, cls in enumerate(unique_classes)}
         self.class_to_index['background'] = 0  # Background class
         
@@ -126,24 +153,32 @@ class KeymakrSegmentation(Dataset):
         self.index_to_class = {idx: cls for cls, idx in self.class_to_index.items()}
         
         # Build index-to-color mapping (maps class indices to their hex colors)
+        # For user classes, use the first available color
         self.index_to_color = {}
+        class_to_first_color = {}
+        
         for color, class_name in self.color_to_class.items():
+            if class_name not in class_to_first_color:
+                class_to_first_color[class_name] = color
+        
+        for class_name, color in class_to_first_color.items():
             class_idx = self.class_to_index.get(class_name, 0)
             self.index_to_color[class_idx] = color
+        
         # Ensure background (index 0) has a color
         if 0 not in self.index_to_color:
             self.index_to_color[0] = '#000000'
         
         self.num_classes = len(self.class_to_index)
         
-        print(f"Found {len(unique_classes)} object classes (+ background)")
+        print(f"Found {len(unique_classes)} classes (+ background)")
 
-        print("Colour to class mapping:")
+        print("Final colour to class mapping:")
         for color, cls in self.color_to_class.items():
             print(f"  - {color} -> {cls}")
 
-        print("Class to index mapping:")
-        for cls, idx in self.class_to_index.items():
+        print("Final class to index mapping:")
+        for cls, idx in sorted(self.class_to_index.items(), key=lambda x: x[1]):
             print(f"  - {cls} -> {idx}")
 
         print("Index to color mapping:")
@@ -309,6 +344,13 @@ class KeymakrSegmentation(Dataset):
         """Convert hex color to RGB tuple."""
         hex_color = hex_color.lstrip('#')
         return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+    def _apply_class_mapping(self, mask):
+        """
+        Apply user-defined class mapping to the generated mask.
+        Since remapping is now handled in _build_global_mapping, this just returns the mask as-is.
+        """
+        return mask  # Class mapping is already applied during color-to-class mapping
     
     def _generate_mask(self, annotation_data):
         """
@@ -352,7 +394,24 @@ class KeymakrSegmentation(Dataset):
                     # There are no pixels with this class/colour in the image
                     print(f"Warning: No pixels found for {class_name} ({hex_color})")
             
-            return Image.fromarray(mask, mode='L')
+            # Report background pixels and total verification
+            background_count = np.sum(mask == 0)
+            total_pixels = height * width
+            assigned_pixels = np.sum(mask > 0)
+            
+            # Get background color for reporting (default to #000000 if not found)
+            background_color = self.index_to_color.get(0, '#000000')
+            print(f"Background pixels ({background_color}): {background_count}")
+            print(f"Total pixels: {total_pixels}, Assigned: {assigned_pixels + background_count}, Expected: {total_pixels}")
+            
+            if assigned_pixels + background_count != total_pixels:
+                raise ValueError(f"WARNING: Pixel count mismatch! Missing {total_pixels - (assigned_pixels + background_count)} pixels")
+            
+            # Map classes to User-defined classes if mapping is provided
+            if self.class_mapping:
+                return self._apply_class_mapping(Image.fromarray(mask, mode='L'))
+            else: 
+                return Image.fromarray(mask, mode='L')
             
         except Exception as e:
             print(f"Warning: Could not process mask image at {self._get_relative_path(mask_image_path)}: {e}")

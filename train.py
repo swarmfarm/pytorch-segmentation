@@ -223,6 +223,71 @@ def main(args):
 
     device = torch.device(args.device)
 
+    if args.debug_gt:
+        # Define a lookup for aggregating certain classes together
+        user_class_mapping = {
+            # Sky classes
+            "sky": "sky",
+            
+            # Terrain classes (vehicles, equipment, infrastructure)
+            "long_grass": "terrain",
+            
+            # Vegetation classes
+            "tree": "vegetation",
+            "tree_cluster": "vegetation",
+            "bush": "vegetation",
+            "bush_cluster": "vegetation",
+            "weed_cluster": "vegetation",
+            "weed": "vegetation",
+            
+            # Everything else maps to background
+            "swarmbot_body": "background",
+            "mower_attachment": "background", 
+            "ute": "background",
+            "truck": "background",
+            "tractor": "background",
+            "front_end_loader": "background",
+            "hopper_trailer": "background",
+            "car": "background",
+            "person": "background",
+            "background": "background"
+        }
+
+        # Create a torch dataset specifically for visualising ground-truth overlays
+        dataset_visualise = KeymakrSegmentation(
+            root_dir=args.data, 
+            image_set="train", 
+            transforms=None,
+            return_paths=True,
+            class_mapping=user_class_mapping
+        )
+
+        # Create the directories for storing debug images
+        debug_dir = Path(args.data).parent / "debug"
+        debug_dir.mkdir(exist_ok=True)
+
+        # Map the class indices to RGB colours
+        class_index_to_rgb_colour_map = {k: dataset_visualise._hex_to_rgb(v) for k, v in dataset_visualise.index_to_color.items()}
+        class_index_to_rgb_colour_map = dict(sorted(class_index_to_rgb_colour_map.items()))
+        for class_index, rgb_colour in class_index_to_rgb_colour_map.items():
+            print("Class {:d} : Colour {}".format(class_index, rgb_colour))
+
+        # Create the overlay utility instance
+        overlay = utils.MaskOverlay(class_index_to_rgb_colour_map)
+        overlay.create_legend(dataset_visualise.index_to_class, save_path=debug_dir / "_legend.png")
+        
+        img_idx = 0
+        for image, target, path in dataset_visualise:
+            file_path = os.path.join(debug_dir, path.replace("/", "_"))            
+            overlay_image = overlay.overlay_on_image(
+                mask=target, 
+                image=image, 
+                alpha=0.5,
+                background_alpha=0.2,  # Keep background transparent
+                save_path=file_path
+            )
+            img_idx += 1
+
     # determine the desired resolution
     resolution = (args.resolution, args.resolution)
 
@@ -249,43 +314,6 @@ def main(args):
         dataset_test, batch_size=1,
         sampler=test_sampler, num_workers=args.workers,
         collate_fn=utils.collate_fn)
-
-    if args.debug_gt:
-        # Create a torch dataset specifically for visualising ground-truth overlays
-        # dataset_visualise, num_classes = get_dataset(args.dataset, args.data, "train", None, args.classes)
-        dataset_visualise = KeymakrSegmentation(
-            root_dir=args.data, 
-            image_set="train", 
-            transforms=None,
-            return_paths=True
-        )
-
-        # Create the directories for storing debug images
-        debug_dir = Path(args.data).parent / "debug"
-        debug_dir.mkdir(exist_ok=True)
-
-        # Map the class indices to RGB colours
-        class_index_to_rgb_colour_map = {k: dataset_visualise._hex_to_rgb(v) for k, v in dataset_visualise.index_to_color.items()}
-        class_index_to_rgb_colour_map = dict(sorted(class_index_to_rgb_colour_map.items()))
-        for class_index, rgb_colour in class_index_to_rgb_colour_map.items():
-            print("Class {:d} : Colour {}".format(class_index, rgb_colour))
-
-        # Create the overlay utility instance
-        overlay = utils.MaskOverlay(class_index_to_rgb_colour_map)
-        overlay.create_legend(dataset_visualise.index_to_class, save_path=debug_dir / "_legend.png")
-        
-        img_idx = 0
-        for image, target, path in dataset_visualise:
-            file_path = os.path.join(debug_dir, path.replace("/", "_"))            
-            overlay_image = overlay.overlay_on_image(
-                mask=target, 
-                image=image, 
-                alpha=0.5,
-                background_alpha=0.0,  # Keep background transparent
-                save_path=file_path
-            )
-            img_idx += 1
-
 
     print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
     print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))
