@@ -10,20 +10,23 @@ import time
 import math
 import os
 import shutil
+from pathlib import Path
 
 import torch
 import torch.utils.data
 from torch import nn
 import torchvision
 from models import segmentation
+import numpy as np
 
-from datasets.coco_utils import get_coco
+from datasets.coco_utils import get_coco, get_coco_sf, ConvertCocoPolysToMask
 from datasets.cityscapes_utils import get_cityscapes
 from datasets.deepscene import DeepSceneSegmentation
 from datasets.custom_dataset import CustomSegmentation
 from datasets.mhp import MHPSegmentation
 from datasets.nyu import NYUDepth
 from datasets.sun import SunRGBDSegmentation
+from datasets.keymakr import KeymakrSegmentation
 
 import transforms as T
 import utils
@@ -39,7 +42,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch Segmentation Training')
 
     parser.add_argument('data', metavar='DIR', help='path to dataset')
-    parser.add_argument('--dataset', default='voc', help='dataset type: voc, voc_aug, coco, cityscapes, deepscene, mhp, nyu, sun, custom (default: voc)')
+    parser.add_argument('--dataset', default='voc', help='dataset type: voc, voc_aug, coco, cocosf, cityscapes, deepscene, keymakr, mhp, nyu, sun, custom (default: voc)')
     parser.add_argument('-a', '--arch', metavar='ARCH', default='fcn_resnet18',
                         choices=model_names,
                         help='model architecture: ' +
@@ -90,8 +93,10 @@ def get_dataset(name, path, image_set, transform, num_classes):
         "voc": (path, torchvision.datasets.VOCSegmentation, num_classes),
         "voc_aug": (path, sbd, num_classes),
         "coco": (path, get_coco, num_classes),
+        "cocosf": (path, get_coco_sf, num_classes),
         "cityscapes": (path, get_cityscapes, num_classes),
         "deepscene": (path, DeepSceneSegmentation, 5),
+        "keymakr": (path, KeymakrSegmentation, num_classes),
         "mhp": (path, MHPSegmentation, num_classes),
         "nyu": (path, NYUDepth, num_classes),
         "sun": (path, SunRGBDSegmentation, num_classes),
@@ -100,6 +105,11 @@ def get_dataset(name, path, image_set, transform, num_classes):
     p, ds_fn, num_classes = paths[name]
 
     ds = ds_fn(p, image_set=image_set, transforms=transform)
+
+    if name == "keymakr":
+        # Override num_classes for Keymakr based on dataset
+        num_classes = ds.num_classes
+
     return ds, num_classes
 
 
@@ -181,6 +191,12 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
     header = 'Epoch: [{}]'.format(epoch)
     for image, target in metric_logger.log_every(data_loader, print_freq, header):
+        
+        print("AS logging\n")
+        print(type(image), type(target))
+        print(image.shape, target.shape)
+        print(np.unique(target.numpy()))
+
         image, target = image.to(device), target.to(device)
         output = model(image)
         loss = criterion(output, target)
@@ -232,6 +248,46 @@ def main(args):
         dataset_test, batch_size=1,
         sampler=test_sampler, num_workers=args.workers,
         collate_fn=utils.collate_fn)
+
+    if True: #args.debug_gt:
+        # data_loader_visualise = torch.utils.data.DataLoader(
+        #     dataset_visualise, batch_size=2,
+        #     sampler=train_sampler, num_workers=args.workers,
+        #     collate_fn=utils.collate_fn)
+        dataset_visualise, num_classes = get_dataset(args.dataset, args.data, "train", None, args.classes)
+        
+        colours = utils.MaskOverlay.create_default_colormap(num_classes, 'tab20')
+        overlay = utils.MaskOverlay(colours)
+        legend_img = overlay.create_legend(None, os.path.join(args.data,"legend.png"))
+
+        poly_to_mask_converter = ConvertCocoPolysToMask()
+
+        img_idx = 0
+        for image, target in dataset_visualise:
+            print(type(image), type(target))
+            image = np.asarray(image)
+            target = np.asarray(target)
+            print(image.shape, target.shape)
+            print(image.dtype, target.dtype)
+            print("np.unique(image)", np.unique(image))
+            print("np.unique(target)", np.unique(target))
+            print(target)
+            # image, target = poly_to_mask_converter(image, target)
+
+            debug_dir = Path(args.data).parent / "debug_gt"
+            debug_dir.mkdir(exist_ok=True)
+            file_path = os.path.join(debug_dir, "debug_gt_{:04d}.png".format(img_idx))
+            
+            result = overlay.overlay_on_image(
+                mask=target, 
+                image=image, 
+                alpha=0.5,
+                background_alpha=0.0,  # Keep background transparent
+                save_path=file_path
+            )
+            img_idx += 1
+
+    assert False
 
     print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
     print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))

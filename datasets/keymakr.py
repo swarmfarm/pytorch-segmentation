@@ -1,0 +1,369 @@
+import os
+import re
+import json
+import math
+import torch
+import numpy as np
+from collections import defaultdict
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
+
+
+class KeymakrSegmentation(Dataset):
+    """
+    Custom dataset for Keymakr annotation format with colored segmentation masks.
+    
+    Dataset structure:
+    root_dir/
+        ├── sequence1.json
+        ├── sequence1.images/
+        │   ├── 00001/
+        │   │   ├── all.png      # RGB image
+        │   │   ├── 0.1.png      # Individual object masks (optional)
+        │   │   ├── 0.2.png
+        │   │   └── ...
+        │   └── 00002/
+        │       └── ...
+        ├── sequence2.json
+        ├── sequence2.images/
+        └── ...
+    
+    The JSON files contain annotation metadata with color-to-type mappings.
+    The mask images are colored where each color represents a specific object type.
+    """
+    
+    def __init__(self, root_dir, image_set='train', transforms=None, val_split=0.2, random_seed=42):
+        """
+        Args:
+            root_dir (string): Root directory containing JSON annotation files and .images folders
+            image_set (string): 'train' or 'val' for dataset split
+            transforms (callable, optional): Optional transform to be applied on samples
+            val_split (float): Fraction of data to use for validation (default: 0.2)
+            random_seed (int): Random seed for reproducible train/val splits
+        """
+        self.root_dir = root_dir
+        self.image_set = image_set
+        self.transforms = transforms
+        self.val_split = val_split
+        
+        # Initialize class mapping
+        self.color_to_class = {}
+        self.class_to_index = {}
+        self.index_to_class = {}
+        self.num_classes = 0
+        
+        # Storage for image paths and annotation data
+        self.images = []
+        self.targets = []
+        self.annotations = []
+        
+        # Build global color mapping and collect all data
+        self._build_global_mapping()
+        self._collect_data()
+        self._split_data(random_seed)
+        
+        print(f"Keymakr Dataset initialized:")
+        print(f"  - {len(self.images)} images in {image_set} set")
+        print(f"  - {self.num_classes} classes found")
+        print(f"  - Classes: {list(self.class_to_index.keys())}")
+    
+    def _build_global_mapping(self):
+        """
+        Scan all JSON files to build a global mapping from colors to class types.
+        This ensures consistent class indices across all sequences.
+        """
+        print("Building global color-to-class mapping...")
+        
+        type_to_colors = defaultdict(set)
+        
+        # Scan all JSON files
+        for filename in os.listdir(self.root_dir):
+            if not filename.endswith('.json'):
+                continue
+                
+            json_path = os.path.join(self.root_dir, filename)
+            
+            try:
+                with open(json_path, 'r') as f:
+                    annotated_frames = json.load(f)
+                
+                # Extract type-color mappings
+                for annotation in annotated_frames:
+                    for obj in annotation.get('objects', []):
+                        obj_type = obj.get('type', 'background')
+                        color = obj.get('color', '#000000')
+                        type_to_colors[obj_type].add(color)
+                    
+            except (json.JSONDecodeError, FileNotFoundError) as e:
+                print(f"Warning: Could not read {json_path}: {e}")
+                continue
+        
+        # Verify consistency: each type should map to exactly one color
+        for obj_type, colors in type_to_colors.items():
+            if len(colors) > 1:
+                print(f"Warning: Type '{obj_type}' has multiple colors: {colors}")
+                print("Using the first color found.")
+            
+            # Use the first color for this type
+            color = list(colors)[0]
+            self.color_to_class[color] = obj_type
+        
+        # Build class-to-index mapping (background = 0, classes start from 1)
+        unique_classes = sorted(set(self.color_to_class.values()))
+        
+        # Remove 'background' if it exists, we'll handle it separately
+        if 'background' in unique_classes:
+            unique_classes.remove('background')
+        
+        self.class_to_index = {cls: idx + 1 for idx, cls in enumerate(unique_classes)}
+        self.class_to_index['background'] = 0  # Background class
+        
+        # Build reverse mapping
+        self.index_to_class = {idx: cls for cls, idx in self.class_to_index.items()}
+        self.num_classes = len(self.class_to_index)
+        
+        print(f"Found {len(unique_classes)} object classes (+ background)")
+
+        print("Colour to class mapping:")
+        for color, cls in self.color_to_class.items():
+            print(f"  - {color} -> {cls}")
+
+        print("Class to index mapping:")
+        for cls, idx in self.class_to_index.items():
+            print(f"  - {cls} -> {idx}")
+
+    def _collect_data(self):
+        """
+        Collect all image paths and corresponding annotation data.
+        """
+        print("Collecting image and annotation data...")
+        
+        for filename in os.listdir(self.root_dir):
+            if not filename.endswith('.json'):
+                continue
+                
+            json_path = os.path.join(self.root_dir, filename)
+            base_name = filename[:-5]  # Remove .json extension
+            images_dir = os.path.join(self.root_dir, f"{base_name}.images")
+            
+            if not os.path.exists(images_dir):
+                print(f"Warning: Images directory not found: {images_dir}")
+                continue
+            
+            try:
+                with open(json_path, 'r') as f:
+                    annotation = json.load(f)
+                
+                # Find all frame directories
+                frame_dirs = []
+                for item in os.listdir(images_dir):
+                    frame_path = os.path.join(images_dir, item)
+                    if os.path.isdir(frame_path):
+                        frame_dirs.append(item)
+                
+                # Sort frame directories numerically
+                frame_dirs = self._sorted_alphanumeric(frame_dirs)
+                
+                for frame_dir in frame_dirs:
+                    frame_path = os.path.join(images_dir, frame_dir)
+                    all_image_path = os.path.join(frame_path, 'all.png')
+                    
+                    if os.path.exists(all_image_path):
+                        # Create synthetic mask path (we'll generate this from individual masks)
+                        mask_data = {
+                            'annotation': annotation,
+                            'frame_path': frame_path,
+                            'sequence_name': base_name,
+                            'frame_id': frame_dir
+                        }
+                        
+                        self.images.append(all_image_path)
+                        self.targets.append(None)  # Will be generated on-demand
+                        self.annotations.append(mask_data)
+                        
+            except (json.JSONDecodeError, FileNotFoundError) as e:
+                print(f"Warning: Could not process {json_path}: {e}")
+                continue
+        
+        print(f"Collected {len(self.images)} image samples")
+    
+    def _split_data(self, random_seed):
+        """
+        Split data into train and validation sets.
+        """
+        if self.val_split <= 0 or self.val_split >= 1:
+            # No split needed
+            return
+            
+        # Set random seed for reproducible splits
+        np.random.seed(random_seed)
+        
+        # Create indices and shuffle
+        total_samples = len(self.images)
+        indices = np.arange(total_samples)
+        np.random.shuffle(indices)
+        
+        # Calculate split point
+        val_size = int(total_samples * self.val_split)
+        
+        if self.image_set == 'train':
+            selected_indices = indices[val_size:]
+        elif self.image_set == 'val':
+            selected_indices = indices[:val_size]
+        else:
+            raise ValueError(f"image_set must be 'train' or 'val', got '{self.image_set}'")
+        
+        # Filter data based on selected indices
+        self.images = [self.images[i] for i in selected_indices]
+        self.targets = [self.targets[i] for i in selected_indices]
+        self.annotations = [self.annotations[i] for i in selected_indices]
+    
+    def _sorted_alphanumeric(self, data):
+        """Sort alphanumeric strings naturally."""
+        convert = lambda text: int(text) if text.isdigit() else text.lower()
+        alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+        return sorted(data, key=alphanum_key)
+    
+    def _hex_to_rgb(self, hex_color):
+        """Convert hex color to RGB tuple."""
+        hex_color = hex_color.lstrip('#')
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+    
+    def _generate_mask(self, annotation_data):
+        """
+        Generate a grayscale segmentation mask by mapping pixel colors in all.png to class indices.
+        Uses the global color-to-class mapping built during initialization.
+        """
+        frame_path = annotation_data['frame_path']
+        
+        # Load the all.png image directly
+        all_image_path = os.path.join(frame_path, 'all.png')
+        
+        try:
+            with Image.open(all_image_path) as img:
+                # Convert to RGB to ensure consistent color format
+                img_rgb = img.convert('RGB')
+                img_array = np.array(img_rgb)
+                height, width = img_array.shape[:2]
+            
+            # Initialize mask with background (class 0)
+            mask = np.zeros((height, width), dtype=np.uint8)
+            
+            # Use global color-to-class mapping
+            for hex_color, class_name in self.color_to_class.items():
+                # Get class index for this class name
+                class_idx = self.class_to_index.get(class_name, 0)
+                
+                if class_idx == 0:  # Skip if class not found
+                    continue
+                
+                # Convert hex color to RGB tuple
+                target_rgb = self._hex_to_rgb(hex_color)
+                
+                # Vectorized color matching with tolerance
+                color_diff = np.abs(img_array - target_rgb)
+                color_distance = np.sqrt(np.sum(color_diff ** 2, axis=2))
+                
+                # Find pixels that match this color within tolerance (adjust tolerance as needed)
+                color_mask = color_distance < 10
+                
+                # Update mask where color matches
+                mask[color_mask] = class_idx
+            
+            return Image.fromarray(mask, mode='L')
+            
+        except Exception as e:
+            print(f"Warning: Could not process all.png at {all_image_path}: {e}")
+            # Return a blank mask as fallback
+            return Image.fromarray(np.zeros((224, 224), dtype=np.uint8), mode='L')
+
+    def __len__(self):
+        return len(self.images)
+    
+    def __getitem__(self, index):
+        # Load RGB image
+        image = Image.open(self.images[index]).convert('RGB')
+        
+        # Generate segmentation mask on-demand
+        target = self._generate_mask(self.annotations[index])
+        
+        # Apply transforms if provided
+        if self.transforms is not None:
+            image, target = self.transforms(image, target)
+        
+        return image, target
+    
+    def get_class_info(self):
+        """
+        Returns information about the classes in the dataset.
+        """
+        return {
+            'num_classes': self.num_classes,
+            'class_to_index': self.class_to_index,
+            'index_to_class': self.index_to_class,
+            'color_to_class': self.color_to_class
+        }
+
+
+def create_keymakr_dataloader(root_dir, image_set='train', batch_size=4, num_workers=4, 
+                             transforms=None, val_split=0.2, random_seed=42):
+    """
+    Convenience function to create a Keymakr DataLoader.
+    
+    Args:
+        root_dir (str): Root directory containing Keymakr annotations and images
+        image_set (str): 'train' or 'val'
+        batch_size (int): Batch size for DataLoader
+        num_workers (int): Number of worker processes for data loading
+        transforms: Transform pipeline to apply to images and masks
+        val_split (float): Fraction of data for validation
+        random_seed (int): Random seed for reproducible splits
+    
+    Returns:
+        DataLoader: Configured PyTorch DataLoader
+        dict: Class information dictionary
+    """
+    from torch.utils.data import DataLoader
+    from utils import collate_fn  # Import from the utils module in the repository
+    
+    dataset = KeymakrSegmentation(
+        root_dir=root_dir,
+        image_set=image_set,
+        transforms=transforms,
+        val_split=val_split,
+        random_seed=random_seed
+    )
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=(image_set == 'train'),
+        num_workers=num_workers,
+        collate_fn=collate_fn,
+        drop_last=(image_set == 'train')
+    )
+    
+    return dataloader, dataset.get_class_info()
+
+
+# Example usage and testing
+if __name__ == "__main__":
+    # This example demonstrates basic usage of the KeymakrSegmentation dataset
+    
+    # Example: Create dataset (adjust path as needed)
+    dataset = KeymakrSegmentation(
+        root_dir="/home/nvidia/Downloads/keymakr/batch_09",
+        image_set='train',
+        transforms=None
+    )
+    
+    print(f"Dataset size: {len(dataset)}")
+    print(f"Number of classes: {dataset.num_classes}")
+    
+    # Test loading a sample
+    if len(dataset) > 0:
+        image, mask = dataset[0]
+        print(f"Image size: {image.size}")
+        print(f"Mask size: {mask.size}")
+        print(f"Unique mask values: {np.unique(np.array(mask))}")
+    

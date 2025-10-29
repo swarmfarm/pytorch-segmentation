@@ -88,7 +88,10 @@ class CenterCrop(object):
 class ToTensor(object):
     def __call__(self, image, target):
         image = F.to_tensor(image)
-        target = torch.as_tensor(np.asarray(target), dtype=torch.int64)
+
+        target_array = np.copy(np.asarray(target))
+
+        target = torch.as_tensor(target_array, dtype=torch.int64)
         return image, target
 
 

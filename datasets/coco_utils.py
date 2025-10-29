@@ -53,7 +53,7 @@ class ConvertCocoPolysToMask(object):
             # with its corresponding categories
             target, _ = (masks * cats[:, None, None]).max(dim=0)
             # discard overlapping instances
-            target[masks.sum(0) > 1] = 255
+            # target[masks.sum(0) > 1] = 255
         else:
             target = torch.zeros((h, w), dtype=torch.uint8)
         target = Image.fromarray(target.numpy())
@@ -105,5 +105,30 @@ def get_coco(root, image_set, transforms):
 
     if image_set == "train":
         dataset = _coco_remove_images_without_annotations(dataset, CAT_LIST)
+
+    return dataset
+
+
+def get_coco_sf(root, image_set, transforms):
+    PATHS = {
+        "train": ("/home/nvidia/Downloads/coco/proto", os.path.join("/home/nvidia/Downloads/coco/proto", "dataset.json")),
+        "val": ("/home/nvidia/Downloads/coco/proto", os.path.join("/home/nvidia/Downloads/coco/proto", "dataset.json")),
+    }
+
+    if transforms is None:
+        transforms = Compose([
+            ConvertCocoPolysToMask(),
+        ])
+    else:
+        transforms = Compose([
+            ConvertCocoPolysToMask(),
+            transforms
+        ])
+
+    img_folder, ann_file = PATHS[image_set]
+    img_folder = os.path.join(root, img_folder)
+    ann_file = os.path.join(root, ann_file)
+
+    dataset = torchvision.datasets.CocoDetection(img_folder, ann_file, transforms=transforms)
 
     return dataset
