@@ -32,7 +32,7 @@ class KeymakrSegmentation(Dataset):
     The mask images are colored where each color represents a specific object type.
     """
     
-    def __init__(self, root_dir, image_set='train', transforms=None, val_split=0.2, random_seed=42, return_paths=False):
+    def __init__(self, root_dir, image_set='train', transforms=None, val_split=0.2, random_seed=42, class_mapping={}, return_paths=False):
         """
         Args:
             root_dir (string): Root directory containing JSON annotation files and .images folders
@@ -40,6 +40,7 @@ class KeymakrSegmentation(Dataset):
             transforms (callable, optional): Optional transform to be applied on samples
             val_split (float): Fraction of data to use for validation (default: 0.2)
             random_seed (int): Random seed for reproducible train/val splits
+            class_mapping (dict): Optional conversion of classes in the dataset to target classes
             return_paths (bool): If True, __getitem__ returns (image, target, image_path)
         """
         self.root_dir = root_dir
@@ -316,6 +317,7 @@ class KeymakrSegmentation(Dataset):
         """
         # Use the mask path stored in annotation data
         mask_image_path = annotation_data['mask_path']
+        print("Generating mask for:", self._get_relative_path(mask_image_path))
         
         try:
             with Image.open(mask_image_path) as img:
@@ -332,21 +334,32 @@ class KeymakrSegmentation(Dataset):
                 # Get class index for this class name
                 class_idx = self.class_to_index.get(class_name, 0)
                 
-                if class_idx == 0:  # Skip if class not found
+                if class_idx == 0:  # Skip background or unknown classes
                     continue
                 
                 # Convert hex color to RGB tuple
                 target_rgb = self._hex_to_rgb(hex_color)
                 
-                # Vectorized color matching with tolerance
-                color_diff = np.abs(img_array - target_rgb)
-                color_distance = np.sqrt(np.sum(color_diff ** 2, axis=2))
+                # First try exact matching
+                exact_match = np.all(img_array == target_rgb, axis=2)
+                exact_count = np.sum(exact_match)
                 
-                # Find pixels that match this color within tolerance (adjust tolerance as needed)
-                color_mask = color_distance < 10
-                
-                # Update mask where color matches
-                mask[color_mask] = class_idx
+                if exact_count > 0:
+                    # Perfect! Use exact matches
+                    mask[exact_match] = class_idx
+                    print(f"Exact color match for {class_name} ({hex_color}): {exact_count} pixels")
+                else:
+                    # Fall back to tolerance-based matching
+                    color_diff = np.abs(img_array - target_rgb)
+                    color_distance = np.sqrt(np.sum(color_diff ** 2, axis=2))
+                    tolerance_match = color_distance < 10
+                    tolerance_count = np.sum(tolerance_match)
+                    
+                    if tolerance_count > 0:
+                        mask[tolerance_match] = class_idx
+                        print(f"Tolerance color match for {class_name} ({hex_color}): {tolerance_count} pixels (no exact matches found)")
+                    else:
+                        print(f"Warning: No pixels found for {class_name} ({hex_color})")
             
             return Image.fromarray(mask, mode='L')
             
