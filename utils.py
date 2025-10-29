@@ -483,7 +483,6 @@ class MaskOverlay(object):
         # Save if path provided
         if save_path:
             result_img.save(save_path)
-            # Image.fromarray(image).save(save_path)
             print(f"Overlaid image saved to: {save_path}")
         
         return result_img

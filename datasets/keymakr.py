@@ -32,7 +32,7 @@ class KeymakrSegmentation(Dataset):
     The mask images are colored where each color represents a specific object type.
     """
     
-    def __init__(self, root_dir, image_set='train', transforms=None, val_split=0.2, random_seed=42):
+    def __init__(self, root_dir, image_set='train', transforms=None, val_split=0.2, random_seed=42, return_paths=False):
         """
         Args:
             root_dir (string): Root directory containing JSON annotation files and .images folders
@@ -40,16 +40,19 @@ class KeymakrSegmentation(Dataset):
             transforms (callable, optional): Optional transform to be applied on samples
             val_split (float): Fraction of data to use for validation (default: 0.2)
             random_seed (int): Random seed for reproducible train/val splits
+            return_paths (bool): If True, __getitem__ returns (image, target, image_path)
         """
         self.root_dir = root_dir
         self.image_set = image_set
         self.transforms = transforms
         self.val_split = val_split
+        self.return_paths = return_paths
         
         # Initialize class mapping
         self.color_to_class = {}
         self.class_to_index = {}
         self.index_to_class = {}
+        self.index_to_color = {}
         self.num_classes = 0
         
         # Storage for image paths and annotation data
@@ -95,7 +98,7 @@ class KeymakrSegmentation(Dataset):
                         type_to_colors[obj_type].add(color)
                     
             except (json.JSONDecodeError, FileNotFoundError) as e:
-                print(f"Warning: Could not read {json_path}: {e}")
+                print(f"Warning: Could not read {self._get_relative_path(json_path)}: {e}")
                 continue
         
         # Verify consistency: each type should map to exactly one color
@@ -120,6 +123,16 @@ class KeymakrSegmentation(Dataset):
         
         # Build reverse mapping
         self.index_to_class = {idx: cls for cls, idx in self.class_to_index.items()}
+        
+        # Build index-to-color mapping (maps class indices to their hex colors)
+        self.index_to_color = {}
+        for color, class_name in self.color_to_class.items():
+            class_idx = self.class_to_index.get(class_name, 0)
+            self.index_to_color[class_idx] = color
+        # Ensure background (index 0) has a color
+        if 0 not in self.index_to_color:
+            self.index_to_color[0] = '#000000'
+        
         self.num_classes = len(self.class_to_index)
         
         print(f"Found {len(unique_classes)} object classes (+ background)")
@@ -132,29 +145,72 @@ class KeymakrSegmentation(Dataset):
         for cls, idx in self.class_to_index.items():
             print(f"  - {cls} -> {idx}")
 
+        print("Index to color mapping:")
+        for idx, color in sorted(self.index_to_color.items()):
+            print(f"  - {idx} -> {color}")
+
     def _collect_data(self):
         """
         Collect all image paths and corresponding annotation data.
+        Maps RGB images from *_data_* directories to mask files in *.images directories.
+        Multiple RGB images per sequence are paired sequentially with mask frames.
         """
         print("Collecting image and annotation data...")
         
-        for filename in os.listdir(self.root_dir):
-            if not filename.endswith('.json'):
-                continue
-                
-            json_path = os.path.join(self.root_dir, filename)
-            base_name = filename[:-5]  # Remove .json extension
-            images_dir = os.path.join(self.root_dir, f"{base_name}.images")
+        # First, group all RGB data directories by sequence prefix
+        rgb_dirs_by_sequence = defaultdict(list)
+        for item in os.listdir(self.root_dir):
+            item_path = os.path.join(self.root_dir, item)
+            if os.path.isdir(item_path) and '_data_' in item and not item.endswith('.images'):
+                # Extract sequence name (part before _data_)
+                sequence_base = item.split('_data_')[0]
+                rgb_dirs_by_sequence[sequence_base].append(item)
+        
+        # Sort RGB directories for consistent ordering
+        for sequence_base in rgb_dirs_by_sequence:
+            rgb_dirs_by_sequence[sequence_base].sort()
+        
+        # Debug: Print RGB directory groupings
+        print("RGB directory groupings:")
+        for sequence_base, dirs in rgb_dirs_by_sequence.items():
+            print(f"  {sequence_base}: {len(dirs)} directories")
+            for dir_name in dirs:
+                print(f"    - {dir_name}")
+        
+        # For each sequence, collect all RGB images and pair with masks sequentially
+        for sequence_base, rgb_dirs in rgb_dirs_by_sequence.items():
+            # Find corresponding .images directory and .json file
+            images_dir = os.path.join(self.root_dir, f"{sequence_base}.images")
+            json_path = os.path.join(self.root_dir, f"{sequence_base}.json")
             
             if not os.path.exists(images_dir):
-                print(f"Warning: Images directory not found: {images_dir}")
+                print(f"Warning: Images directory not found: {self._get_relative_path(images_dir)}")
+                continue
+            
+            if not os.path.exists(json_path):
+                print(f"Warning: JSON file not found: {self._get_relative_path(json_path)}")
                 continue
             
             try:
                 with open(json_path, 'r') as f:
                     annotation = json.load(f)
                 
-                # Find all frame directories
+                # Collect all RGB images from all data directories for this sequence
+                all_rgb_images = []
+                for rgb_dir in rgb_dirs:
+                    rgb_dir_path = os.path.join(self.root_dir, rgb_dir)
+                    if not os.path.exists(rgb_dir_path):
+                        continue
+                    
+                    rgb_files = [f for f in os.listdir(rgb_dir_path) 
+                               if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))]
+                    
+                    # Add full paths and sort within this directory
+                    rgb_file_paths = [os.path.join(rgb_dir_path, f) for f in rgb_files]
+                    rgb_file_paths.sort()  # Sort by filename
+                    all_rgb_images.extend(rgb_file_paths)
+                
+                # Find all frame directories in the .images folder
                 frame_dirs = []
                 for item in os.listdir(images_dir):
                     frame_path = os.path.join(images_dir, item)
@@ -164,28 +220,48 @@ class KeymakrSegmentation(Dataset):
                 # Sort frame directories numerically
                 frame_dirs = self._sorted_alphanumeric(frame_dirs)
                 
-                for frame_dir in frame_dirs:
-                    frame_path = os.path.join(images_dir, frame_dir)
-                    all_image_path = os.path.join(frame_path, 'all.png')
+                print(f"Sequence {sequence_base}: {len(all_rgb_images)} RGB images, {len(frame_dirs)} mask frames")
+                
+                # Pair RGB images with mask frames sequentially
+                for i, frame_dir in enumerate(frame_dirs):
+                    if i >= len(all_rgb_images):
+                        print(f"Warning: More mask frames than RGB images for sequence {sequence_base}")
+                        break
                     
-                    if os.path.exists(all_image_path):
-                        # Create synthetic mask path (we'll generate this from individual masks)
-                        mask_data = {
-                            'annotation': annotation,
-                            'frame_path': frame_path,
-                            'sequence_name': base_name,
-                            'frame_id': frame_dir
-                        }
-                        
-                        self.images.append(all_image_path)
-                        self.targets.append(None)  # Will be generated on-demand
-                        self.annotations.append(mask_data)
+                    frame_path = os.path.join(images_dir, frame_dir)
+                    mask_path = os.path.join(frame_path, 'all.png')
+                    
+                    if not os.path.exists(mask_path):
+                        print(f"Warning: Mask file not found: {self._get_relative_path(mask_path)}")
+                        continue
+                    
+                    rgb_image_path = all_rgb_images[i]
+                    
+                    # Store RGB image path and mask generation data
+                    mask_data = {
+                        'annotation': annotation,
+                        'frame_path': frame_path,
+                        'mask_path': mask_path,
+                        'sequence_name': sequence_base,
+                        'frame_id': frame_dir
+                    }
+                    
+                    self.images.append(rgb_image_path)  # RGB image path
+                    self.targets.append(None)  # Will be generated on-demand
+                    self.annotations.append(mask_data)
+                    
+                    print(f"Paired: {self._get_relative_path(rgb_image_path)} -> {self._get_relative_path(mask_path)}")
+                
+                # Warn if there are leftover RGB images
+                if len(all_rgb_images) > len(frame_dirs):
+                    leftover_count = len(all_rgb_images) - len(frame_dirs)
+                    print(f"Warning: {leftover_count} RGB images without corresponding mask frames for sequence {sequence_base}")
                         
             except (json.JSONDecodeError, FileNotFoundError) as e:
-                print(f"Warning: Could not process {json_path}: {e}")
+                print(f"Warning: Could not process {self._get_relative_path(json_path)}: {e}")
                 continue
         
-        print(f"Collected {len(self.images)} image samples")
+        print(f"Collected {len(self.images)} RGB-mask pairs")
     
     def _split_data(self, random_seed):
         """
@@ -224,6 +300,10 @@ class KeymakrSegmentation(Dataset):
         alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
         return sorted(data, key=alphanum_key)
     
+    def _get_relative_path(self, path):
+        """Get path relative to root_dir for logging purposes."""
+        return os.path.relpath(path, self.root_dir)
+    
     def _hex_to_rgb(self, hex_color):
         """Convert hex color to RGB tuple."""
         hex_color = hex_color.lstrip('#')
@@ -234,13 +314,11 @@ class KeymakrSegmentation(Dataset):
         Generate a grayscale segmentation mask by mapping pixel colors in all.png to class indices.
         Uses the global color-to-class mapping built during initialization.
         """
-        frame_path = annotation_data['frame_path']
-        
-        # Load the all.png image directly
-        all_image_path = os.path.join(frame_path, 'all.png')
+        # Use the mask path stored in annotation data
+        mask_image_path = annotation_data['mask_path']
         
         try:
-            with Image.open(all_image_path) as img:
+            with Image.open(mask_image_path) as img:
                 # Convert to RGB to ensure consistent color format
                 img_rgb = img.convert('RGB')
                 img_array = np.array(img_rgb)
@@ -273,7 +351,7 @@ class KeymakrSegmentation(Dataset):
             return Image.fromarray(mask, mode='L')
             
         except Exception as e:
-            print(f"Warning: Could not process all.png at {all_image_path}: {e}")
+            print(f"Warning: Could not process mask image at {self._get_relative_path(mask_image_path)}: {e}")
             # Return a blank mask as fallback
             return Image.fromarray(np.zeros((224, 224), dtype=np.uint8), mode='L')
 
@@ -282,7 +360,8 @@ class KeymakrSegmentation(Dataset):
     
     def __getitem__(self, index):
         # Load RGB image
-        image = Image.open(self.images[index]).convert('RGB')
+        image_path = self.images[index]
+        image = Image.open(image_path).convert('RGB')
         
         # Generate segmentation mask on-demand
         target = self._generate_mask(self.annotations[index])
@@ -291,7 +370,11 @@ class KeymakrSegmentation(Dataset):
         if self.transforms is not None:
             image, target = self.transforms(image, target)
         
-        return image, target
+        # Return with or without path based on configuration
+        if self.return_paths:
+            return image, target, self._get_relative_path(image_path)
+        else:
+            return image, target
     
     def get_class_info(self):
         """
@@ -301,12 +384,13 @@ class KeymakrSegmentation(Dataset):
             'num_classes': self.num_classes,
             'class_to_index': self.class_to_index,
             'index_to_class': self.index_to_class,
-            'color_to_class': self.color_to_class
+            'color_to_class': self.color_to_class,
+            'index_to_color': self.index_to_color
         }
 
 
 def create_keymakr_dataloader(root_dir, image_set='train', batch_size=4, num_workers=4, 
-                             transforms=None, val_split=0.2, random_seed=42):
+                             transforms=None, val_split=0.2, random_seed=42, return_paths=False):
     """
     Convenience function to create a Keymakr DataLoader.
     
@@ -318,6 +402,7 @@ def create_keymakr_dataloader(root_dir, image_set='train', batch_size=4, num_wor
         transforms: Transform pipeline to apply to images and masks
         val_split (float): Fraction of data for validation
         random_seed (int): Random seed for reproducible splits
+        return_paths (bool): If True, return image paths along with images and masks
     
     Returns:
         DataLoader: Configured PyTorch DataLoader
@@ -326,12 +411,13 @@ def create_keymakr_dataloader(root_dir, image_set='train', batch_size=4, num_wor
     from torch.utils.data import DataLoader
     from utils import collate_fn  # Import from the utils module in the repository
     
-    dataset = KeymakrSegmentation(
+    dataset = KeyMakrSegmentation(
         root_dir=root_dir,
         image_set=image_set,
         transforms=transforms,
         val_split=val_split,
-        random_seed=random_seed
+        random_seed=random_seed,
+        return_paths=return_paths
     )
     
     dataloader = DataLoader(
@@ -351,7 +437,7 @@ if __name__ == "__main__":
     # This example demonstrates basic usage of the KeymakrSegmentation dataset
     
     # Example: Create dataset (adjust path as needed)
-    dataset = KeymakrSegmentation(
+    dataset = KeyMakrSegmentation(
         root_dir="/home/nvidia/Downloads/keymakr/batch_09",
         image_set='train',
         transforms=None
@@ -362,8 +448,14 @@ if __name__ == "__main__":
     
     # Test loading a sample
     if len(dataset) > 0:
-        image, mask = dataset[0]
-        print(f"Image size: {image.size}")
+        sample = dataset[0]
+        if len(sample) == 3:  # return_paths=True
+            image, mask, path = sample
+            print(f"Image size: {image.size}")
+            print(f"Image path: {path}")
+        else:  # return_paths=False
+            image, mask = sample
+            print(f"Image size: {image.size}")
         print(f"Mask size: {mask.size}")
         print(f"Unique mask values: {np.unique(np.array(mask))}")
     

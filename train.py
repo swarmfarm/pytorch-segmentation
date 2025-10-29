@@ -73,6 +73,7 @@ def parse_args():
     parser.add_argument('--resume', default='', help='resume from checkpoint')
     parser.add_argument("--test-only", dest="test_only", help="Only test the model", action="store_true")
     parser.add_argument("--pretrained", dest="pretrained", help="Use pre-trained models (only supported for fcn_resnet101)", action="store_true")
+    parser.add_argument('--debug-gt', action='store_true', help='output some debug images with ground-truth overlays')
 
     # distributed training parameters
     parser.add_argument('--world-size', default=1, type=int,
@@ -249,36 +250,34 @@ def main(args):
         sampler=test_sampler, num_workers=args.workers,
         collate_fn=utils.collate_fn)
 
-    if True: #args.debug_gt:
-        # data_loader_visualise = torch.utils.data.DataLoader(
-        #     dataset_visualise, batch_size=2,
-        #     sampler=train_sampler, num_workers=args.workers,
-        #     collate_fn=utils.collate_fn)
-        dataset_visualise, num_classes = get_dataset(args.dataset, args.data, "train", None, args.classes)
+    if args.debug_gt:
+        # Create a torch dataset specifically for visualising ground-truth overlays
+        # dataset_visualise, num_classes = get_dataset(args.dataset, args.data, "train", None, args.classes)
+        dataset_visualise = KeymakrSegmentation(
+            root_dir=args.data, 
+            image_set="train", 
+            transforms=None,
+            return_paths=True
+        )
+
+        # Create the directories for storing debug images
+        debug_dir = Path(args.data).parent / "debug"
+        debug_dir.mkdir(exist_ok=True)
+
+        # Map the class indices to RGB colours
+        class_index_to_rgb_colour_map = {k: dataset_visualise._hex_to_rgb(v) for k, v in dataset_visualise.index_to_color.items()}
+        class_index_to_rgb_colour_map = dict(sorted(class_index_to_rgb_colour_map.items()))
+        for class_index, rgb_colour in class_index_to_rgb_colour_map.items():
+            print("Class {:d} : Colour {}".format(class_index, rgb_colour))
+
+        # Create the overlay utility instance
+        overlay = utils.MaskOverlay(class_index_to_rgb_colour_map)
+        overlay.create_legend(dataset_visualise.index_to_class, save_path=debug_dir / "_legend.png")
         
-        colours = utils.MaskOverlay.create_default_colormap(num_classes, 'tab20')
-        overlay = utils.MaskOverlay(colours)
-        legend_img = overlay.create_legend(None, os.path.join(args.data,"legend.png"))
-
-        poly_to_mask_converter = ConvertCocoPolysToMask()
-
         img_idx = 0
-        for image, target in dataset_visualise:
-            print(type(image), type(target))
-            image = np.asarray(image)
-            target = np.asarray(target)
-            print(image.shape, target.shape)
-            print(image.dtype, target.dtype)
-            print("np.unique(image)", np.unique(image))
-            print("np.unique(target)", np.unique(target))
-            print(target)
-            # image, target = poly_to_mask_converter(image, target)
-
-            debug_dir = Path(args.data).parent / "debug_gt"
-            debug_dir.mkdir(exist_ok=True)
-            file_path = os.path.join(debug_dir, "debug_gt_{:04d}.png".format(img_idx))
-            
-            result = overlay.overlay_on_image(
+        for image, target, path in dataset_visualise:
+            file_path = os.path.join(debug_dir, path.replace("/", "_"))            
+            overlay_image = overlay.overlay_on_image(
                 mask=target, 
                 image=image, 
                 alpha=0.5,
@@ -287,7 +286,6 @@ def main(args):
             )
             img_idx += 1
 
-    assert False
 
     print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
     print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))
