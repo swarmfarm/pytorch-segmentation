@@ -349,17 +349,8 @@ class KeymakrSegmentation(Dataset):
                     mask[exact_match] = class_idx
                     print(f"Exact color match for {class_name} ({hex_color}): {exact_count} pixels")
                 else:
-                    # Fall back to tolerance-based matching
-                    color_diff = np.abs(img_array - target_rgb)
-                    color_distance = np.sqrt(np.sum(color_diff ** 2, axis=2))
-                    tolerance_match = color_distance < 10
-                    tolerance_count = np.sum(tolerance_match)
-                    
-                    if tolerance_count > 0:
-                        mask[tolerance_match] = class_idx
-                        print(f"Tolerance color match for {class_name} ({hex_color}): {tolerance_count} pixels (no exact matches found)")
-                    else:
-                        print(f"Warning: No pixels found for {class_name} ({hex_color})")
+                    # There are no pixels with this class/colour in the image
+                    print(f"Warning: No pixels found for {class_name} ({hex_color})")
             
             return Image.fromarray(mask, mode='L')
             
