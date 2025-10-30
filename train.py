@@ -11,6 +11,7 @@ import math
 import os
 import shutil
 from pathlib import Path
+from typing import Dict, List, Optional
 
 import torch
 import torch.utils.data
@@ -69,11 +70,12 @@ def parse_args():
                         metavar='W', help='weight decay (default: 1e-4)',
                         dest='weight_decay')
     parser.add_argument('--print-freq', default=10, type=int, help='print frequency')
-    parser.add_argument('--model-dir', default='.', help='path where to save output models')
+    parser.add_argument('--model-dir', default='./results/', help='Path where to save output models')
     parser.add_argument('--resume', default='', help='resume from checkpoint')
     parser.add_argument("--test-only", dest="test_only", help="Only test the model", action="store_true")
     parser.add_argument("--pretrained", dest="pretrained", help="Use pre-trained models (only supported for fcn_resnet101)", action="store_true")
-    parser.add_argument('--debug-gt', action='store_true', help='output some debug images with ground-truth overlays')
+    parser.add_argument('--debug-gt', action='store_true', help='Output some debug images with ground-truth overlays')
+    parser.add_argument('--map-classes', action='store_true', help='Map classes in the original dataset to user-specified classes (only for Keymakr dataset)')
 
     # distributed training parameters
     parser.add_argument('--world-size', default=1, type=int,
@@ -87,7 +89,7 @@ def parse_args():
 #
 # load desired dataset
 #
-def get_dataset(name, path, image_set, transform, num_classes):
+def get_dataset(name, path, image_set, transform, num_classes, user_class_mapping: Dict[str, str] = {}):
     def sbd(*args, **kwargs):
         return torchvision.datasets.SBDataset(*args, mode='segmentation', **kwargs)
     paths = {
@@ -97,19 +99,26 @@ def get_dataset(name, path, image_set, transform, num_classes):
         "cocosf": (path, get_coco_sf, num_classes),
         "cityscapes": (path, get_cityscapes, num_classes),
         "deepscene": (path, DeepSceneSegmentation, 5),
-        "keymakr": (path, KeymakrSegmentation, num_classes),
         "mhp": (path, MHPSegmentation, num_classes),
         "nyu": (path, NYUDepth, num_classes),
         "sun": (path, SunRGBDSegmentation, num_classes),
         "custom": (path, CustomSegmentation, num_classes)
     }
-    p, ds_fn, num_classes = paths[name]
-
-    ds = ds_fn(p, image_set=image_set, transforms=transform)
 
     if name == "keymakr":
+        # Special case for Keymakr dataset to allow User class mappings
+        ds = KeymakrSegmentation(
+            root_dir=path, 
+            image_set=image_set, 
+            transforms=transform,
+            class_mapping=user_class_mapping
+        )
+
         # Override num_classes for Keymakr based on dataset
         num_classes = ds.num_classes
+    else: 
+        p, ds_fn, num_classes = paths[name]
+        ds = ds_fn(p, image_set=image_set, transforms=transform)
 
     return ds, num_classes
 
@@ -192,12 +201,6 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
     header = 'Epoch: [{}]'.format(epoch)
     for image, target in metric_logger.log_every(data_loader, print_freq, header):
-        
-        print("AS logging\n")
-        print(type(image), type(target))
-        print(image.shape, target.shape)
-        print(np.unique(target.numpy()))
-
         image, target = image.to(device), target.to(device)
         output = model(image)
         loss = criterion(output, target)
@@ -391,8 +394,9 @@ def main(args):
         resolution = (args.height, args.width)     
     
     # load the train and val datasets
-    dataset, num_classes = get_dataset(args.dataset, args.data, "train", get_transform(train=True, resolution=resolution), args.classes)
-    dataset_test, _ = get_dataset(args.dataset, args.data, "val", get_transform(train=False, resolution=resolution), args.classes)
+    dataset, num_classes = get_dataset(args.dataset, args.data, "train", get_transform(train=True, resolution=resolution), args.classes, user_class_mapping=user_class_mapping)
+    dataset_test, _ = get_dataset(args.dataset, args.data, "val", get_transform(train=False, resolution=resolution), args.classes, user_class_mapping=user_class_mapping)
+    verify_dataset_labels([dataset,dataset_test], verbose=True)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
