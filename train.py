@@ -258,6 +258,7 @@ def main(args):
             root_dir=args.data, 
             image_set="train", 
             transforms=None,
+            val_split=0.,  # for visualisation, use the entire dataset
             return_paths=True,
             class_mapping=user_class_mapping
         )
