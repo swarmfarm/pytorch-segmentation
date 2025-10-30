@@ -211,6 +211,98 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
 
 
+def verify_dataset_labels(datasets: List[KeymakrSegmentation], verbose: bool = False):
+    if not isinstance(datasets, list):
+        datasets = [datasets]
+
+    if len(datasets) <= 1:
+        # Only one dataset, nothing to verify
+        return
+
+    # Check that all datasets have identical class mappings
+    reference_dataset = datasets[0]
+    
+    print(f"Verifying consistency across {len(datasets)} KeymakrSegmentation datasets...")
+    
+    for i, dataset in enumerate(datasets[1:], 1):
+        print(f"Comparing dataset {i+1} with reference dataset...")
+        
+        # Verify color_to_class mapping
+        if verbose:
+            print()
+            print(f"Reference color_to_class: {reference_dataset.color_to_class}")
+            print(f"Dataset {i+1} color_to_class: {dataset.color_to_class}")
+        if dataset.color_to_class != reference_dataset.color_to_class:
+            print(f"ERROR: color_to_class mismatch in dataset {i+1}")
+            print(f"Reference: {reference_dataset.color_to_class}")
+            print(f"Dataset {i+1}: {dataset.color_to_class}")
+            raise ValueError(f"Inconsistent color_to_class mapping in dataset {i+1}")
+        
+        # Verify class_to_index mapping
+        if verbose:
+            print()
+            print(f"Reference class_to_index: {reference_dataset.class_to_index}")
+            print(f"Dataset {i+1} class_to_index: {dataset.class_to_index}")
+        if dataset.class_to_index != reference_dataset.class_to_index:
+            print(f"ERROR: class_to_index mismatch in dataset {i+1}")
+            print(f"Reference: {reference_dataset.class_to_index}")
+            print(f"Dataset {i+1}: {dataset.class_to_index}")
+            raise ValueError(f"Inconsistent class_to_index mapping in dataset {i+1}")
+        
+        # Verify index_to_class mapping
+        if verbose:
+            print()
+            print(f"Reference index_to_class: {reference_dataset.index_to_class}")
+            print(f"Dataset {i+1} index_to_class: {dataset.index_to_class}")
+        if dataset.index_to_class != reference_dataset.index_to_class:
+            print(f"ERROR: index_to_class mismatch in dataset {i+1}")
+            print(f"Reference: {reference_dataset.index_to_class}")
+            print(f"Dataset {i+1}: {dataset.index_to_class}")
+            raise ValueError(f"Inconsistent index_to_class mapping in dataset {i+1}")
+        
+        # Verify index_to_color mapping
+        if verbose:
+            print()
+            print(f"Reference index_to_color: {reference_dataset.index_to_color}")
+            print(f"Dataset {i+1} index_to_color: {dataset.index_to_color}")
+        if dataset.index_to_color != reference_dataset.index_to_color:
+            print(f"ERROR: index_to_color mismatch in dataset {i+1}")
+            print(f"Reference: {reference_dataset.index_to_color}")
+            print(f"Dataset {i+1}: {dataset.index_to_color}")
+            raise ValueError(f"Inconsistent index_to_color mapping in dataset {i+1}")
+        
+        # Verify class_mapping
+        if verbose:
+            print()
+            print(f"Reference class_mapping: {reference_dataset.class_mapping}")
+            print(f"Dataset {i+1} class_mapping: {dataset.class_mapping}")
+        if dataset.class_mapping != reference_dataset.class_mapping:
+            print(f"ERROR: class_mapping mismatch in dataset {i+1}")
+            print(f"Reference: {reference_dataset.class_mapping}")
+            print(f"Dataset {i+1}: {dataset.class_mapping}")
+            raise ValueError(f"Inconsistent class_mapping in dataset {i+1}")
+        
+        # Verify num_classes
+        if verbose:
+            print()
+            print(f"Reference num_classes: {reference_dataset.num_classes}")
+            print(f"Dataset {i+1} num_classes: {dataset.num_classes}")
+        if dataset.num_classes != reference_dataset.num_classes:
+            print(f"ERROR: num_classes mismatch in dataset {i+1}")
+            print(f"Reference: {reference_dataset.num_classes}")
+            print(f"Dataset {i+1}: {dataset.num_classes}")
+            raise ValueError(f"Inconsistent num_classes in dataset {i+1}")
+        
+        print(f"✓ Dataset {i+1} mappings are consistent with reference")
+    
+    print()
+    print("✅ All dataset mappings are consistent!")
+    print(f"Reference mappings:")
+    print(f"  - num_classes: {reference_dataset.num_classes}")
+    print(f"  - class_to_index: {reference_dataset.class_to_index}")
+    print(f"  - class_mapping: {reference_dataset.class_mapping}")
+        
+
 #
 # main training function
 #
