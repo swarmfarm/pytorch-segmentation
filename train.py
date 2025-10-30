@@ -313,9 +313,7 @@ def main(args):
     utils.init_distributed_mode(args)
     print(args)
 
-    device = torch.device(args.device)
-
-    if args.debug_gt:
+    if args.map_classes and args.dataset == "keymakr":
         # Define a lookup for aggregating certain classes together
         user_class_mapping = {
             # Sky classes
@@ -344,7 +342,10 @@ def main(args):
             "person": "background",
             "background": "background"
         }
+    else:
+        user_class_mapping = {}
 
+    if args.debug_gt:
         # Create a torch dataset specifically for visualising ground-truth overlays
         dataset_visualise = KeymakrSegmentation(
             root_dir=args.data, 
