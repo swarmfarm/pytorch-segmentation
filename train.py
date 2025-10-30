@@ -316,6 +316,8 @@ def main(args):
     utils.init_distributed_mode(args)
     print(args)
 
+    device = torch.device(args.device)
+
     if args.map_classes and args.dataset == "keymakr":
         # Define a lookup for aggregating certain classes together
         user_class_mapping = {
