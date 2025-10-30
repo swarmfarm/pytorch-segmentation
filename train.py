@@ -289,6 +289,8 @@ def main(args):
             )
             img_idx += 1
 
+        return
+
     # determine the desired resolution
     resolution = (args.resolution, args.resolution)
 
