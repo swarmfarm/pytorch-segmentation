@@ -336,6 +336,7 @@ def main(args):
             "weed": "vegetation",
             
             # Everything else maps to background
+            "background": "background",
             "swarmbot_body": "background",
             "mower_attachment": "background", 
             "ute": "background",
@@ -345,7 +346,11 @@ def main(args):
             "hopper_trailer": "background",
             "car": "background",
             "person": "background",
-            "background": "background"
+            "sprayer": "background",
+            "forklift": "background",
+            "trailer": "background",
+            "swarmbot": "background",
+            "sprayer_sp": "background",
         }
     else:
         user_class_mapping = {}
