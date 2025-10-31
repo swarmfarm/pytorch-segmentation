@@ -76,6 +76,7 @@ def parse_args():
     parser.add_argument("--pretrained", dest="pretrained", help="Use pre-trained models (only supported for fcn_resnet101)", action="store_true")
     parser.add_argument('--debug-gt', action='store_true', help='Output some debug images with ground-truth overlays')
     parser.add_argument('--map-classes', action='store_true', help='Map classes in the original dataset to user-specified classes (only for Keymakr dataset)')
+    parser.add_argument('--validate', action='store_true', help='(NEEDS TO BE RELOCATED TO A SEPARATE SCRIPT) Validate the model on a separate dataset')
 
     # distributed training parameters
     parser.add_argument('--world-size', default=1, type=int,
@@ -107,12 +108,24 @@ def get_dataset(name, path, image_set, transform, num_classes, user_class_mappin
 
     if name == "keymakr":
         # Special case for Keymakr dataset to allow User class mappings
-        ds = KeymakrSegmentation(
-            root_dir=path, 
-            image_set=image_set, 
-            transforms=transform,
-            class_mapping=user_class_mapping
-        )
+        if image_set == "test":
+            # This a hacky way to load the entire dataset for testing
+            #   It still needs to be called either "train" or "val" due to how the dataset class is implemented, but we want to load all data
+            ds = KeymakrSegmentation(
+                root_dir=path, 
+                image_set="train", 
+                transforms=transform,
+                val_split=0.,
+                class_mapping=user_class_mapping,
+                return_paths=True  # get the image paths as well if running on a test set
+            )
+        else: 
+            ds = KeymakrSegmentation(
+                root_dir=path, 
+                image_set=image_set, 
+                transforms=transform,
+                class_mapping=user_class_mapping
+            )
 
         # Override num_classes for Keymakr based on dataset
         num_classes = ds.num_classes
@@ -151,7 +164,9 @@ def get_transform(train, resolution):
             transforms.append(T.RandomHorizontalFlip(0.5))
 
     transforms.append(T.ToTensor())
-    transforms.append(T.Normalize(mean=[0.485, 0.456, 0.406],
+
+    if train: 
+        transforms.append(T.Normalize(mean=[0.485, 0.456, 0.406],
                                   std=[0.229, 0.224, 0.225]))
 
     return T.Compose(transforms)
@@ -174,18 +189,71 @@ def criterion(inputs, target):
 #
 # evaluate model IoU (intersection over union)
 #
-def evaluate(model, data_loader, device, num_classes):
+def evaluate(model, data_loader, device, num_classes, visualise_dir=None):
+
+    overlay = None
+    dataset = data_loader.dataset
+    if visualise_dir:
+        if not isinstance(visualise_dir, Path) and not isinstance(visualise_dir, str):
+            print("ERROR: visualise_dir must be a string or Path object, not {}".format(type(visualise_dir)))
+            return
+        
+        if isinstance(visualise_dir, str):
+            visualise_dir = Path(visualise_dir)
+        
+        visualise_dir.mkdir(exist_ok=True)
+        overlay, _ = create_dataset_mask_visualiser(dataset)
+        overlay.create_legend(dataset.index_to_class, save_path=visualise_dir / "_legend.png")
+
     model.eval()
     confmat = utils.ConfusionMatrix(num_classes)
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
     with torch.no_grad():
-        for image, target in metric_logger.log_every(data_loader, 100, header):
+        iter = 1        
+        iterator = metric_logger.log_every(data_loader, 100, header)
+
+        for next in iterator:
+            if hasattr(dataset, "return_paths") and dataset.return_paths:
+                image, target, path = next
+                if isinstance(path, tuple):  # this is returned as a tuple sometimes??
+                    path = path[0]
+            else: 
+                image, target = next
+
             image, target = image.to(device), target.to(device)
             output = model(image)
             output = output['out']
+            output = output.argmax(1)
 
-            confmat.update(target.flatten(), output.argmax(1).flatten())
+            confmat.update(target.flatten(), output.flatten())
+
+            if overlay:
+                # The image name to be save should be the iteration index padded to 6 digits leading zeros
+                assert visualise_dir is not None
+                assert path is not None
+                assert isinstance(path, str)
+                path = path.replace("/", "_")  # avoid subdirectories
+                file_path = os.path.join(visualise_dir, f"{Path(path).with_suffix('.jpg')}")
+
+                # Assume that the batch size of 1 is used during evaluation
+                assert image.shape[0] == 1
+                assert target.shape[0] == 1
+                assert output.shape[0] == 1
+                image = image[0]
+                target = target[0]
+                output = output[0]
+
+                # Overlay the predicted mask onto the input image and save to file
+                overlay.overlay_on_image(
+                    mask=output, 
+                    image=image, 
+                    alpha=0.5,
+                    background_alpha=0.2,  # Keep background transparent
+                    save_path=file_path
+                )
+
+            iter += 1
 
         confmat.reduce_from_all_processes()
 
@@ -203,6 +271,18 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
     for image, target in metric_logger.log_every(data_loader, print_freq, header):
         image, target = image.to(device), target.to(device)
         output = model(image)
+
+        print()
+        print("target:", target.shape, torch.unique(target))
+        print("type(output):", type(output))
+        
+        # iterate over the ordered dict output to find the main output
+        for key, value in output.items():
+            print(key)
+            print(type(key), type(value))
+            print(f"  output['{key}']:", value.shape, torch.unique(value))
+
+
         loss = criterion(output, target)
 
         optimizer.zero_grad()
@@ -304,6 +384,27 @@ def verify_dataset_labels(datasets: List[KeymakrSegmentation], verbose: bool = F
     print(f"  - num_classes: {reference_dataset.num_classes}")
     print(f"  - class_to_index: {reference_dataset.class_to_index}")
     print(f"  - class_mapping: {reference_dataset.class_mapping}")
+
+
+def create_dataset_mask_visualiser(keymakr_dataset: KeymakrSegmentation):
+    """
+    Create a mask visualiser for a Keymakr dataset.
+    Args:
+        keymakr_dataset (KeymakrSegmentation): An instance of the KeymakrSegmentation dataset.
+    Returns:
+        overlay (utils.MaskOverlay): An instance of the MaskOverlay utility for visualising masks.
+        class_index_to_rgb_colour_map (Dict[int, Tuple[int, int, int]]): The mapping from class indices to RGB colours.
+    """
+    # Map the class indices to RGB colours
+    class_index_to_rgb_colour_map = {k: keymakr_dataset._hex_to_rgb(v) for k, v in keymakr_dataset.index_to_color.items()}
+    class_index_to_rgb_colour_map = dict(sorted(class_index_to_rgb_colour_map.items()))
+    for class_index, rgb_colour in class_index_to_rgb_colour_map.items():
+        print("Class {:d} : Colour {}".format(class_index, rgb_colour))
+
+    # Create the overlay utility instance
+    overlay = utils.MaskOverlay(class_index_to_rgb_colour_map)
+
+    return overlay, class_index_to_rgb_colour_map
         
 
 #
@@ -363,21 +464,28 @@ def main(args):
             transforms=None,
             val_split=0.,  # for visualisation, use the entire dataset
             return_paths=True,
-            class_mapping=user_class_mapping
+            class_mapping=user_class_mapping,
+            debug_or_vis=True
         )
 
         # Create the directories for storing debug images
-        debug_dir = Path(args.data).parent / "debug"
+        debug_dir = Path(f"{str(Path(args.data))}_debug")
+        if args.map_classes:
+            debug_dir = Path(f"{str(debug_dir)}_mapped")
+        else:
+            debug_dir = Path(f"{str(debug_dir)}_original")
         debug_dir.mkdir(exist_ok=True)
 
-        # Map the class indices to RGB colours
-        class_index_to_rgb_colour_map = {k: dataset_visualise._hex_to_rgb(v) for k, v in dataset_visualise.index_to_color.items()}
-        class_index_to_rgb_colour_map = dict(sorted(class_index_to_rgb_colour_map.items()))
-        for class_index, rgb_colour in class_index_to_rgb_colour_map.items():
-            print("Class {:d} : Colour {}".format(class_index, rgb_colour))
+        # # Map the class indices to RGB colours
+        # class_index_to_rgb_colour_map = {k: dataset_visualise._hex_to_rgb(v) for k, v in dataset_visualise.index_to_color.items()}
+        # class_index_to_rgb_colour_map = dict(sorted(class_index_to_rgb_colour_map.items()))
+        # for class_index, rgb_colour in class_index_to_rgb_colour_map.items():
+        #     print("Class {:d} : Colour {}".format(class_index, rgb_colour))
 
-        # Create the overlay utility instance
-        overlay = utils.MaskOverlay(class_index_to_rgb_colour_map)
+        # # Create the overlay utility instance
+        # overlay = utils.MaskOverlay(class_index_to_rgb_colour_map)
+
+        overlay, _ = create_dataset_mask_visualiser(dataset_visualise)
         overlay.create_legend(dataset_visualise.index_to_class, save_path=debug_dir / "_legend.png")
         
         img_idx = 0
@@ -400,36 +508,42 @@ def main(args):
     if "width" in args and "height" in args:
         resolution = (args.height, args.width)     
     
-    # load the train and val datasets
-    dataset, num_classes = get_dataset(args.dataset, args.data, "train", get_transform(train=True, resolution=resolution), args.classes, user_class_mapping=user_class_mapping)
-    dataset_test, _ = get_dataset(args.dataset, args.data, "val", get_transform(train=False, resolution=resolution), args.classes, user_class_mapping=user_class_mapping)
-    verify_dataset_labels([dataset,dataset_test], verbose=True)
+    if args.test_only:
+        dataset_test_full, num_classes = get_dataset(args.dataset, args.data, "test", get_transform(train=False, resolution=resolution), args.classes, user_class_mapping=user_class_mapping)
+        data_loader_test_full = torch.utils.data.DataLoader(dataset_test_full)#,collate_fn=utils.collate_fn)
+    else: 
+        # load the train and val datasets
+        dataset, num_classes = get_dataset(args.dataset, args.data, "train", get_transform(train=True, resolution=resolution), args.classes, user_class_mapping=user_class_mapping)
+        dataset_test, _ = get_dataset(args.dataset, args.data, "val", get_transform(train=False, resolution=resolution), args.classes, user_class_mapping=user_class_mapping)
+        verify_dataset_labels([dataset,dataset_test], verbose=True)
 
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-        test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test)
-    else:
-        train_sampler = torch.utils.data.RandomSampler(dataset)
-        test_sampler = torch.utils.data.SequentialSampler(dataset_test)
+        if args.distributed:
+            train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+            test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test)
+        else:
+            train_sampler = torch.utils.data.RandomSampler(dataset)
+            test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
-    data_loader = torch.utils.data.DataLoader(
-        dataset, batch_size=args.batch_size,
-        sampler=train_sampler, num_workers=args.workers,
-        collate_fn=utils.collate_fn, drop_last=True)
+        data_loader = torch.utils.data.DataLoader(
+            dataset, batch_size=args.batch_size,
+            sampler=train_sampler, num_workers=args.workers,
+            collate_fn=utils.collate_fn, drop_last=True)
 
-    data_loader_test = torch.utils.data.DataLoader(
-        dataset_test, batch_size=1,
-        sampler=test_sampler, num_workers=args.workers,
-        collate_fn=utils.collate_fn)
+        data_loader_test = torch.utils.data.DataLoader(
+            dataset_test, batch_size=1,
+            sampler=test_sampler, num_workers=args.workers,
+            collate_fn=utils.collate_fn)
 
-    print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
-    print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))
-    print("=> training with model: {:s}".format(args.arch))
+        print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
+        print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))
+        print("=> training with model: {:s}".format(args.arch))
 
     # create the segmentation model
-    model = segmentation.__dict__[args.arch](num_classes=num_classes,
-                                                                aux_loss=args.aux_loss,
-                                                                pretrained=args.pretrained)
+    model = segmentation.__dict__[args.arch](
+        num_classes=num_classes,
+        aux_loss=args.aux_loss,
+        pretrained=args.pretrained
+    )
     model.to(device)
 
     if args.distributed:
@@ -447,7 +561,29 @@ def main(args):
 
     # eval-only mode
     if args.test_only:
-        confmat = evaluate(model, data_loader_test, device=device, num_classes=num_classes)
+        # Run this below to verify that all datasets ("train", "val", "test") have consistent class mappings
+        # verify_dataset_labels([dataset, dataset_test, dataset_test_full], verbose=True)
+
+        try:
+            # Check that the dataset has been loaded correctly
+            if not data_loader_test_full:
+                print("ERROR: The test dataset hasn't been created properly - exiting...")
+                return
+        except NameError:
+            print("ERROR: data_loader_test_full is not defined - exiting...")
+            return
+        
+        # Create the directories for storing debug images
+        visualise_dir = Path(f"{str(Path(args.data))}_test")
+        if args.map_classes:
+            visualise_dir = Path(f"{str(visualise_dir)}_mapped")
+        else:
+            visualise_dir = Path(f"{str(visualise_dir)}_original")
+        visualise_dir.mkdir(exist_ok=True)
+        
+        # Run evaluation
+        print('yep')
+        confmat = evaluate(model, data_loader_test_full, device=device, num_classes=num_classes, visualise_dir=visualise_dir)
         print(confmat)
         return
 
