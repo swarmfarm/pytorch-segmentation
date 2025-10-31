@@ -2,6 +2,7 @@ import os
 import re
 import json
 import math
+from typing import Dict
 import torch
 import numpy as np
 from collections import defaultdict
@@ -31,8 +32,8 @@ class KeymakrSegmentation(Dataset):
     The JSON files contain annotation metadata with color-to-type mappings.
     The mask images are colored where each color represents a specific object type.
     """
-    
-    def __init__(self, root_dir, image_set='train', transforms=None, val_split=0.2, random_seed=42, class_mapping={}, return_paths=False):
+
+    def __init__(self, root_dir, image_set='train', transforms=None, val_split=0.2, random_seed=42, class_mapping: Dict[str, str] = {}, return_paths=False, debug_or_vis=False):
         """
         Args:
             root_dir (string): Root directory containing JSON annotation files and .images folders
@@ -48,6 +49,7 @@ class KeymakrSegmentation(Dataset):
         self.transforms = transforms
         self.val_split = val_split
         self.return_paths = return_paths
+        self.is_debug_or_vis = debug_or_vis
         
         # Initialize class mapping
         self.color_to_class = {}
@@ -207,11 +209,12 @@ class KeymakrSegmentation(Dataset):
             rgb_dirs_by_sequence[sequence_base].sort()
         
         # Debug: Print RGB directory groupings
-        print("RGB directory groupings:")
-        for sequence_base, dirs in rgb_dirs_by_sequence.items():
-            print(f"  {sequence_base}: {len(dirs)} directories")
-            for dir_name in dirs:
-                print(f"    - {dir_name}")
+        if self.is_debug_or_vis:
+            print("RGB directory groupings:")
+            for sequence_base, dirs in rgb_dirs_by_sequence.items():
+                print(f"  {sequence_base}: {len(dirs)} directories")
+                for dir_name in dirs:
+                    print(f"    - {dir_name}")
         
         # For each sequence, collect all RGB images and pair with masks sequentially
         for sequence_base, rgb_dirs in rgb_dirs_by_sequence.items():
@@ -255,8 +258,10 @@ class KeymakrSegmentation(Dataset):
                 
                 # Sort frame directories numerically
                 frame_dirs = self._sorted_alphanumeric(frame_dirs)
-                
-                print(f"Sequence {sequence_base}: {len(all_rgb_images)} RGB images, {len(frame_dirs)} mask frames")
+                if self.is_debug_or_vis:
+                    print(f"Sequence {sequence_base}: {len(all_rgb_images)} RGB images, {len(frame_dirs)} mask frames")
+                if len(all_rgb_images) != len(frame_dirs):
+                    print(f"Warning: Mismatch in counts for sequence {sequence_base}: {len(all_rgb_images)} RGB images vs {len(frame_dirs)} mask frames")
                 
                 # Pair RGB images with mask frames sequentially
                 for i, frame_dir in enumerate(frame_dirs):
@@ -285,9 +290,10 @@ class KeymakrSegmentation(Dataset):
                     self.images.append(rgb_image_path)  # RGB image path
                     self.targets.append(None)  # Will be generated on-demand
                     self.annotations.append(mask_data)
-                    
-                    print(f"Paired: {self._get_relative_path(rgb_image_path)} -> {self._get_relative_path(mask_path)}")
-                
+
+                    if self.is_debug_or_vis:
+                        print(f"Paired: {self._get_relative_path(rgb_image_path)} -> {self._get_relative_path(mask_path)}")
+
                 # Warn if there are leftover RGB images
                 if len(all_rgb_images) > len(frame_dirs):
                     leftover_count = len(all_rgb_images) - len(frame_dirs)
@@ -297,7 +303,8 @@ class KeymakrSegmentation(Dataset):
                 print(f"Warning: Could not process {self._get_relative_path(json_path)}: {e}")
                 continue
         
-        print(f"Collected {len(self.images)} RGB-mask pairs")
+        if self.is_debug_or_vis:
+            print(f"Collected {len(self.images)} RGB-mask pairs")
     
     def _split_data(self, random_seed):
         """
@@ -359,7 +366,8 @@ class KeymakrSegmentation(Dataset):
         """
         # Use the mask path stored in annotation data
         mask_image_path = annotation_data['mask_path']
-        print("Generating mask for:", self._get_relative_path(mask_image_path))
+        if self.is_debug_or_vis:
+            print("Generating mask for:", self._get_relative_path(mask_image_path))
         
         try:
             with Image.open(mask_image_path) as img:
@@ -389,10 +397,12 @@ class KeymakrSegmentation(Dataset):
                 if exact_count > 0:
                     # Perfect! Use exact matches
                     mask[exact_match] = class_idx
-                    print(f"Exact color match for {class_name} ({hex_color}): {exact_count} pixels")
+                    if self.is_debug_or_vis:
+                        print(f"Exact color match for {class_name} ({hex_color}): {exact_count} pixels")
                 else:
                     # There are no pixels with this class/colour in the image
-                    print(f"Warning: No pixels found for {class_name} ({hex_color})")
+                    if self.is_debug_or_vis:
+                        print(f"Warning: No pixels found for {class_name} ({hex_color})")
             
             # Report background pixels and total verification
             background_count = np.sum(mask == 0)
@@ -401,9 +411,10 @@ class KeymakrSegmentation(Dataset):
             
             # Get background color for reporting (default to #000000 if not found)
             background_color = self.index_to_color.get(0, '#000000')
-            print(f"Background pixels ({background_color}): {background_count}")
-            print(f"Total pixels: {total_pixels}, Assigned: {assigned_pixels + background_count}, Expected: {total_pixels}")
-            
+            if self.is_debug_or_vis:
+                print(f"Background pixels ({background_color}): {background_count}")
+                print(f"Total pixels: {total_pixels}, Assigned: {assigned_pixels + background_count}, Expected: {total_pixels}")
+
             if assigned_pixels + background_count != total_pixels:
                 raise ValueError(f"WARNING: Pixel count mismatch! Missing {total_pixels - (assigned_pixels + background_count)} pixels")
             
@@ -474,7 +485,7 @@ def create_keymakr_dataloader(root_dir, image_set='train', batch_size=4, num_wor
     from torch.utils.data import DataLoader
     from utils import collate_fn  # Import from the utils module in the repository
     
-    dataset = KeyMakrSegmentation(
+    dataset = KeymakrSegmentation(
         root_dir=root_dir,
         image_set=image_set,
         transforms=transforms,
@@ -500,7 +511,7 @@ if __name__ == "__main__":
     # This example demonstrates basic usage of the KeymakrSegmentation dataset
     
     # Example: Create dataset (adjust path as needed)
-    dataset = KeyMakrSegmentation(
+    dataset = KeymakrSegmentation(
         root_dir="/home/nvidia/Downloads/keymakr/batch_09",
         image_set='train',
         transforms=None
