@@ -63,7 +63,7 @@ def fcn_resnet18(pretrained=False, progress=True,
             contains the same classes as Pascal VOC
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    print('torchvision.models.segmentation.fcn_resnet18()')
+    print('torchvision.models.segmentation.fcn_resnet18()', f"pretrained={pretrained}")
 
     if pretrained:
         aux_loss = True
