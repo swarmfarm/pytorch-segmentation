@@ -222,6 +222,7 @@ def evaluate(model, data_loader, device, num_classes, visualise_dir=None):
                 image, target = next
 
             image, target = image.to(device), target.to(device)
+
             output = model(image)
             output = output['out']
             output = output.argmax(1)
@@ -270,6 +271,7 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
     header = 'Epoch: [{}]'.format(epoch)
     for image, target in metric_logger.log_every(data_loader, print_freq, header):
         image, target = image.to(device), target.to(device)
+
         output = model(image)
 
         print()
@@ -435,23 +437,25 @@ def main(args):
             "bush_cluster": "vegetation",
             "weed_cluster": "vegetation",
             "weed": "vegetation",
+
+            # Obstacle classes
+            "ute": "obstacle",
+            "truck": "obstacle",
+            "tractor": "obstacle",
+            "front_end_loader": "obstacle",
+            "hopper_trailer": "obstacle",
+            "car": "obstacle",
+            "person": "obstacle",
+            "sprayer": "obstacle",
+            "forklift": "obstacle",
+            "trailer": "obstacle",
+            "swarmbot": "obstacle",
+            "sprayer_sp": "obstacle",
             
             # Everything else maps to background
             "background": "background",
             "swarmbot_body": "background",
             "mower_attachment": "background", 
-            "ute": "background",
-            "truck": "background",
-            "tractor": "background",
-            "front_end_loader": "background",
-            "hopper_trailer": "background",
-            "car": "background",
-            "person": "background",
-            "sprayer": "background",
-            "forklift": "background",
-            "trailer": "background",
-            "swarmbot": "background",
-            "sprayer_sp": "background",
         }
     else:
         user_class_mapping = {}
@@ -621,7 +625,7 @@ def main(args):
         print(confmat)
 
         # save model checkpoint
-        checkpoint_path = os.path.join(args.model_dir, 'model_{}.pth'.format(epoch))
+        checkpoint_path = os.path.join(args.model_dir, 'model_{:04d}.pth'.format(epoch))
 
         utils.save_on_master(
             {
