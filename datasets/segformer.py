@@ -36,7 +36,7 @@ class SegformerDataset(Dataset):
 
         # Read images, removing alpha channel.
         input_image = decode_image(str(img_path))[:3, : , :]
-        mask_image = decode_image(str(mask_path))
+        mask_image = decode_image(str(mask_path)).squeeze().to(torch.int64)
 
         input_image = tv_tensors.Image(input_image)
         mask_image = tv_tensors.Mask(mask_image)
