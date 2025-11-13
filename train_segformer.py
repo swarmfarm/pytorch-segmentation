@@ -11,6 +11,8 @@ import math
 import os
 import shutil
 from pathlib import Path
+import numpy as np
+import cv2
 
 import torch
 import torch.utils.data
@@ -32,6 +34,8 @@ from datasets.segformer import SegformerDataset
 
 import transforms as T
 import utils
+
+torch.manual_seed(123)
 
 model_names = sorted(name for name in segmentation.__dict__
     if name.islower() and not name.startswith("__")
@@ -148,8 +152,6 @@ def get_transform(train, resolution):
 def criterion(inputs, target):
     losses = {}
     for name, x in inputs.items():
-        print(x.dtype)
-        print(target.dtype)
         losses[name] = nn.functional.cross_entropy(x, target, ignore_index=255)
 
     if len(losses) == 1:
@@ -177,6 +179,68 @@ def evaluate(model, data_loader, device, num_classes):
         confmat.reduce_from_all_processes()
 
     return confmat
+
+
+def output_sample(model, model_pretrained, device, train_dir: Path, epoch: int, data_loader, num_batches, mean, std, class_colours, pretrained_sf_id_mapping):
+
+    # epoch_dir = train_dir / f"epoch_{epoch:04d}"
+    # epoch_dir.mkdir(exist_ok=True)
+    with torch.no_grad():
+
+        batch_num = 0
+        for image, target in data_loader:
+            image, target = image.to(device), target.to(device)
+            output = model(image)
+            logits = output['out']
+
+            if model_pretrained is not None:
+                output_pretrained = model_pretrained(image)
+                logits_pretrained = output_pretrained['out']
+
+            batch_size = image.shape[0]
+            h = image.shape[2]
+            w = image.shape[3]
+
+            # Create an image for the batch.
+            num_imgs = 3 if model_pretrained is None else 4
+            batch_img = np.zeros((batch_size * h, w * num_imgs, 3), dtype=np.uint8)
+            for b in range(batch_size):
+                image_sample = image[b].cpu().numpy().transpose(1, 2, 0)
+                target_sample = target[b].cpu().numpy()
+                #logits_sample = logits[b].cpu().numpy()
+                pred_sample = logits[b].argmax(dim=0).cpu().numpy()
+
+                if model_pretrained is not None:
+                    pred_sample_pretrained = logits_pretrained[b].argmax(dim=0).cpu().numpy()
+                    # Convert to SF classes.
+                    pred_img_pretrained = np.zeros((pred_sample_pretrained.shape[0], pred_sample_pretrained.shape[1], 3), dtype=np.uint8)
+                    for id_pretrained, id_sf in pretrained_sf_id_mapping.items():
+                        colour = class_colours[id_sf]
+                        pred_img_pretrained[pred_sample_pretrained == id_pretrained] = colour
+
+                image_sample = (image_sample * np.array(std)) + np.array(mean)
+                image_sample = (image_sample * 255).astype(np.uint8)
+
+                # Convert to colours.
+                pred_img = np.zeros((pred_sample.shape[0], pred_sample.shape[1], 3), dtype=np.uint8)
+                for id, colour in class_colours.items():
+                    pred_img[pred_sample == id] = colour
+
+                target_img = np.zeros((target_sample.shape[0], target_sample.shape[1], 3), dtype=np.uint8)
+                for id, colour in class_colours.items():
+                    target_img[target_sample == id] = colour
+
+                batch_img[b * h: b * h + h, :w, :] = image_sample[:, :, ::-1]
+                batch_img[b * h: b * h + h, w: 2 * w, :] = pred_img[:, :, ::-1]
+                batch_img[b * h: b * h + h, 2 * w: 3 * w, :] = target_img[:, :, ::-1]
+                if model_pretrained is not None:
+                    batch_img[b * h: b * h + h, 3 * w: 4 * w, :] = pred_img_pretrained[:, :, ::-1]
+
+            cv2.imwrite(train_dir / f"test_epoch-{epoch:04d}_batch-{batch_num:04d}.png", batch_img)
+
+            batch_num += 1
+            if batch_num >= num_batches:
+                break
 
 
 #
@@ -219,11 +283,44 @@ def main(args):
     args.test_only = False
     args.model_dir = "/home/paperspace/data/segnet_training"
 
-    args.epochs = 1
+    args.epochs = 20
     args.print_freq = 1
     args.lr = 0.01  # TODO: Experiment with this.
     args.momentum = 0.9  # TODO: Experiment with this.
     args.weight_decay = 1e-4  # TODO: Experiment with this.
+    
+    # Map from cityscapes names to swarmfarm names.
+    cs_sf_name_mapping = {}
+    with open("/home/paperspace/data/svo-inference/cityscapes_swarmfarm_mapping.csv", 'r') as f:
+        lines = f.readlines()
+        lines = [l.strip().split(',') for l in lines if l.strip()]
+        cs_sf_name_mapping = {l[0]: l[1] for l in lines}
+
+    # Read mappings from class indices to names and colours.
+    def read_names_colours(csv_file):
+        names = {}
+        colours = {}
+        with open(csv_file, 'r') as f:
+            lines = f.readlines()
+            lines = [l.strip().split(',') for l in lines if l.strip()]
+            names = {int(l[0]): l[1] for l in lines}
+            colours = {int(l[0]): (int(l[2]), int(l[3]), int(l[4])) for l in lines}
+        return names, colours
+    cs_names, cs_colours = read_names_colours("/home/paperspace/data/svo-inference/cityscapes_classes.csv")
+    sf_names, sf_colours = read_names_colours("/home/paperspace/data/svo-inference/swarmfarm_classes.csv")
+
+    # Map from cityscapes ids to swarmfarm ids.
+    sf_ids = {n: i for i, n in sf_names.items()}
+    cs_sf_id_mapping = {}
+    for cs_id, cs_name in cs_names.items():
+        sf_name = cs_sf_name_mapping[cs_name]
+        sf_id = sf_ids[sf_name]
+        cs_sf_id_mapping[cs_id] = sf_id
+
+    # Directory to store all training results.
+    train_dir = Path(args.model_dir) / datetime.datetime.now().strftime("%y%m%d_%H%M%S")
+    train_dir.mkdir(exist_ok=False)
+
     
 
     # if args.model_dir:
@@ -256,11 +353,15 @@ def main(args):
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=mean, std=std),
         ])
+        dataset = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-11"), transforms=transforms)
+        
+        transforms_test = v2.Compose([
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=mean, std=std),
+        ])
+        dataset_test = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-9"), transforms=transforms_test)
 
-        dataset = SegformerDataset(Path("/home/paperspace/data/svo-inference"), transforms=transforms)
-        dataset_test = dataset
-
-        num_classes = 6
+        num_classes = 6  # 21 in the COCO pretrained model.
 
     # if args.distributed:
     #     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
@@ -279,16 +380,21 @@ def main(args):
     #     dataset_test, batch_size=1,
     #     sampler=test_sampler, num_workers=args.workers,
     #     collate_fn=utils.collate_fn)
-    data_loader_test = DataLoader(dataset_test, batch_size=1, shuffle=False, num_workers=args.workers)
+    data_loader_test = DataLoader(dataset_test, batch_size=4, shuffle=True, num_workers=args.workers)
 
     print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
     # print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))
     print("=> training with model: {:s}".format(args.arch))
 
+    # Pre-trained model for comparison.
+    model_cs = None
+    if 0:
+        model_cs = segmentation.__dict__["fcn_resnet101"](pretrained=True)
+        model_cs.to(device)
+        model_cs.eval()
+
     # create the segmentation model
-    model = segmentation.__dict__[args.arch](num_classes=num_classes,
-                                                                aux_loss=args.aux_loss,
-                                                                pretrained=args.pretrained)
+    model = segmentation.__dict__[args.arch](num_classes=num_classes, aux_loss=args.aux_loss, pretrained=args.pretrained)
     model.to(device)
 
     if args.distributed:
@@ -328,6 +434,8 @@ def main(args):
         optimizer,
         lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9)
 
+    output_sample(model, model_cs, device, train_dir, 999, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping)
+
     # training loop
     start_time = time.time()
     best_IoU = 0.0
@@ -344,7 +452,7 @@ def main(args):
         print(confmat)
 
         # save model checkpoint
-        checkpoint_path = os.path.join(args.model_dir, 'model_{}.pth'.format(epoch))
+        checkpoint_path = os.path.join(train_dir, 'model_{}.pth'.format(epoch))
 
         utils.save_on_master(
             {
@@ -368,6 +476,10 @@ def main(args):
             best_path = os.path.join(args.model_dir, 'model_best.pth')
             shutil.copyfile(checkpoint_path, best_path)
             print('saved best model to:  {:s}  ({:.3f}% mean IoU, {:.3f}% accuracy)'.format(best_path, best_IoU, confmat.acc_global))
+
+        # Save some predictions.
+        output_sample(model, model_cs, device, train_dir, epoch, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping)
+
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
