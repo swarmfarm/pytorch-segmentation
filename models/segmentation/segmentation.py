@@ -11,7 +11,7 @@ __all__ = ['fcn_resnet18', 'fcn_resnet34', 'fcn_resnet50', 'fcn_resnet101', 'dee
 model_urls = {
     'fcn_resnet18_coco': None,
     'fcn_resnet34_coco': None,
-    'fcn_resnet50_coco': None,
+    'fcn_resnet50_coco': 'https://download.pytorch.org/models/fcn_resnet50_coco-1167a1af.pth',
     'fcn_resnet101_coco': 'https://download.pytorch.org/models/fcn_resnet101_coco-7ecb50ca.pth',
     'deeplabv3_resnet50_coco': None,
     'deeplabv3_resnet101_coco': 'https://download.pytorch.org/models/deeplabv3_resnet101_coco-586e9e4e.pth',
@@ -38,7 +38,7 @@ def _segm_resnet(name, backbone_name, num_classes, aux, pretrained_backbone=True
 
     aux_classifier = None
     if aux:
-        inplanes = 1024 / inplanes_scale_factor
+        inplanes = 1024 // inplanes_scale_factor
         aux_classifier = FCNHead(inplanes, num_classes)
 
     model_map = {
@@ -146,7 +146,14 @@ def fcn_resnet101(pretrained=False, progress=True,
             raise NotImplementedError('pretrained {} is not supported as of now'.format(arch))
         else:
             state_dict = load_state_dict_from_url(model_url, progress=progress)
-            model.load_state_dict(state_dict)
+            try:
+                model.load_state_dict(state_dict)
+            except:
+                del state_dict["classifier.4.weight"]
+                del state_dict["classifier.4.bias"]
+                del state_dict["aux_classifier.4.weight"]
+                del state_dict["aux_classifier.4.bias"]
+                model.load_state_dict(state_dict, strict=False)
     return model
 
 
