@@ -347,6 +347,7 @@ def main(args):
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
 
+        # TODO: Add resize to half res at start.
         transforms = v2.Compose([
             v2.RandomResizedCrop(size=resolution, antialias=True),
             v2.RandomHorizontalFlip(p=0.5),
@@ -355,6 +356,7 @@ def main(args):
         ])
         dataset = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-11"), transforms=transforms)
         
+        # TODO: Add resize to half res at start.
         transforms_test = v2.Compose([
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=mean, std=std),
