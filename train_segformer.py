@@ -16,10 +16,11 @@ import cv2
 
 import torch
 import torch.utils.data
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torch import nn
 import torchvision
 from torchvision.transforms import v2
+from torch.utils.data.sampler import SubsetRandomSampler
 from models import segmentation
 
 from datasets.coco_utils import get_coco
@@ -181,7 +182,7 @@ def evaluate(model, data_loader, device, num_classes):
     return confmat
 
 
-def output_sample(model, model_pretrained, device, train_dir: Path, epoch: int, data_loader, num_batches, mean, std, class_colours, pretrained_sf_id_mapping):
+def output_sample(model, model_pretrained, device, train_dir: Path, epoch: int, data_loader, num_batches, mean, std, class_colours, pretrained_sf_id_mapping, prefix):
 
     # epoch_dir = train_dir / f"epoch_{epoch:04d}"
     # epoch_dir.mkdir(exist_ok=True)
@@ -236,7 +237,7 @@ def output_sample(model, model_pretrained, device, train_dir: Path, epoch: int, 
                 if model_pretrained is not None:
                     batch_img[b * h: b * h + h, 3 * w: 4 * w, :] = pred_img_pretrained[:, :, ::-1]
 
-            cv2.imwrite(train_dir / f"test_epoch-{epoch:04d}_batch-{batch_num:04d}.png", batch_img)
+            cv2.imwrite(train_dir / f"{prefix}_epoch-{epoch:04d}_batch-{batch_num:04d}.png", batch_img)
 
             batch_num += 1
             if batch_num >= num_batches:
@@ -271,9 +272,9 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
 def main(args):
     args = argparse.Namespace()
     args.device = "cuda"
-    args.batch_size = 4
+    args.batch_size = 64
     args.resolution = 512
-    args.workers = 1
+    args.workers = 8
     args.arch = "fcn_resnet18"
     args.dataset = "segformer"
     args.aux_loss = False  # TODO: See what this does exactly.
@@ -283,8 +284,8 @@ def main(args):
     args.test_only = False
     args.model_dir = "/home/paperspace/data/segnet_training"
 
-    args.epochs = 20
-    args.print_freq = 1
+    args.epochs = 200
+    args.print_freq = 10
     args.lr = 0.01  # TODO: Experiment with this.
     args.momentum = 0.9  # TODO: Experiment with this.
     args.weight_decay = 1e-4  # TODO: Experiment with this.
@@ -302,6 +303,7 @@ def main(args):
         colours = {}
         with open(csv_file, 'r') as f:
             lines = f.readlines()
+            lines = [l for l in lines if not l.strip().startswith("#")]
             lines = [l.strip().split(',') for l in lines if l.strip()]
             names = {int(l[0]): l[1] for l in lines}
             colours = {int(l[0]): (int(l[2]), int(l[3]), int(l[4])) for l in lines}
@@ -349,40 +351,64 @@ def main(args):
 
         # TODO: Add resize to half res at start.
         transforms = v2.Compose([
-            v2.RandomResizedCrop(size=resolution, antialias=True),
+            v2.Resize((540, 960)),
+            v2.RandomResizedCrop(size=256, antialias=True),
             v2.RandomHorizontalFlip(p=0.5),
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=mean, std=std),
         ])
-        dataset = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-11"), transforms=transforms)
+        # dataset = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-11_tmp"), transforms=transforms)
+
+        # For batch 9, use annotated masks merged with Segformer masks.
+        dataset_batch9 = SegformerDataset(
+            Path("/home/paperspace/data/dataset-render/SWA-001-009-Video-Annotation-ds-98611a459fdd4846bb84ffe6febf98f8_2025-10-07_12-35-02_6763aa85eea8ffdac30ba12a_68e508f57175641d11102028"), 
+            mask_subdir="sf_mask_indices_merged",
+            transforms=transforms
+            )
         
+        dataset_batch11 = SegformerDataset(
+            Path("/home/paperspace/data/dataset-render/SWA-001-011-Video-Annotation-ds-08e197904470459e8cb2ca76209d9ef0_2025-11-13_14-02-42_685e558c28a9857d720a6d94_6915e501bf9b9b256e013a83"), 
+            transforms=transforms
+            )
+        
+        # dataset = dataset_batch11
+        dataset = ConcatDataset([dataset_batch9, dataset_batch11])
+
         # TODO: Add resize to half res at start.
         transforms_test = v2.Compose([
+            v2.Resize((540, 960)),
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=mean, std=std),
         ])
-        dataset_test = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-9"), transforms=transforms_test)
+
+        dataset_test = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-9_tmp"), transforms=transforms_test)
 
         num_classes = 6  # 21 in the COCO pretrained model.
 
-    # if args.distributed:
-    #     train_sampler = torch.utils.data.distributed.DistributedSampler(dataset)
-    #     test_sampler = torch.utils.data.distributed.DistributedSampler(dataset_test)
-    # else:
-    #     train_sampler = torch.utils.data.RandomSampler(dataset)
-    #     test_sampler = torch.utils.data.SequentialSampler(dataset_test)
+    train_sampler = None
+    test_sampler = None
+    if 1:
+        # Use the training dataset for training and testing, with a random split.
+        validation_split = 0.2
+        shuffle_dataset = True
+        random_seed = 1
 
-    # data_loader = torch.utils.data.DataLoader(
-    #     dataset, batch_size=args.batch_size,
-    #     sampler=train_sampler, num_workers=args.workers,
-    #     collate_fn=utils.collate_fn, drop_last=True)
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
+        dataset_size = len(dataset)
+        indices = list(range(dataset_size))
+        split = int(np.floor(validation_split * dataset_size))
+        if shuffle_dataset:
+            np.random.seed(random_seed)
+            np.random.shuffle(indices)
+        train_indices, test_indices = indices[split:], indices[:split]
 
-    # data_loader_test = torch.utils.data.DataLoader(
-    #     dataset_test, batch_size=1,
-    #     sampler=test_sampler, num_workers=args.workers,
-    #     collate_fn=utils.collate_fn)
-    data_loader_test = DataLoader(dataset_test, batch_size=4, shuffle=True, num_workers=args.workers)
+        train_sampler = SubsetRandomSampler(train_indices)
+        test_sampler = SubsetRandomSampler(test_indices)
+
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=train_sampler, num_workers=args.workers)
+        data_loader_test = DataLoader(dataset, batch_size=8, sampler=test_sampler, num_workers=args.workers)
+    else:
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
+        data_loader_test = DataLoader(dataset_test, batch_size=4, shuffle=True, num_workers=args.workers)
 
     print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
     # print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))
@@ -436,7 +462,10 @@ def main(args):
         optimizer,
         lambda x: (1 - x / (len(data_loader) * args.epochs)) ** 0.9)
 
-    output_sample(model, model_cs, device, train_dir, 999, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping)
+    output_sample(model, model_cs, device, train_dir, 999, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="test_epoch")
+    output_sample(model, model_cs, device, train_dir, 999, data_loader, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="train_epoch")
+
+    return
 
     # training loop
     start_time = time.time()
@@ -475,12 +504,13 @@ def main(args):
 
         if confmat.mean_IoU > best_IoU:
             best_IoU = confmat.mean_IoU
-            best_path = os.path.join(args.model_dir, 'model_best.pth')
+            best_path = os.path.join(train_dir, 'model_best.pth')
             shutil.copyfile(checkpoint_path, best_path)
             print('saved best model to:  {:s}  ({:.3f}% mean IoU, {:.3f}% accuracy)'.format(best_path, best_IoU, confmat.acc_global))
 
         # Save some predictions.
-        output_sample(model, model_cs, device, train_dir, epoch, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping)
+        output_sample(model, model_cs, device, train_dir, epoch, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="test")
+        output_sample(model, model_cs, device, train_dir, epoch, data_loader, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="train")
 
 
     total_time = time.time() - start_time

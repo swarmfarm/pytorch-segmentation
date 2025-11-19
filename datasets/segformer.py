@@ -12,11 +12,11 @@ from torchvision import tv_tensors
 
 class SegformerDataset(Dataset):
 
-    def __init__(self, dataset_dir: Path, transforms=None):
+    def __init__(self, dataset_dir: Path, image_subdir: str = "input_images", mask_subdir: str = "sf_mask_indices", transforms=None):
         self.dataset_dir = dataset_dir
         self.transforms = transforms
-        self.input_images_dir = dataset_dir / "input_images"
-        self.mask_images_dir = dataset_dir / "sf_mask_indices"
+        self.input_images_dir = dataset_dir / image_subdir
+        self.mask_images_dir = dataset_dir / mask_subdir
 
         # Get a list of files.
         image_files = self.input_images_dir.rglob(f"*.png")

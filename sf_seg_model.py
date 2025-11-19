@@ -40,10 +40,6 @@ class SwarmfarmSegModel(SegModel):
     
     def inference_image(self, img: np.array) -> Tuple[np.array, np.array, np.array]:
 
-        # BGR -> RGB
-        # TODO: Move this out of here, and assume RGB.
-        img = img[:, :, ::-1]
-
         # Normalise image for input to the model.
         img = (img.astype(float) / 255 - self.mean) / self.std
 

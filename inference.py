@@ -22,10 +22,13 @@ def main():
     args.test_only = False
     args.model_dir = "/home/paperspace/data/segnet_training"
     num_classes = 6  # TODO: Get this from the below model classes file.
-    checkpoint_file = "/home/paperspace/data/segnet_training/251113_020505/model_12.pth"
+    #checkpoint_file = "/home/paperspace/data/segnet_training/251113_020505/model_12.pth"
+    checkpoint_file = "/home/paperspace/data/segnet_training/251114_225236/model_best.pth"
 
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
+
+    downsample = 2
 
     inference_data_dir = Path("/home/paperspace/data/svo-inference")
     # Definitions of the model and target classes.
@@ -50,8 +53,9 @@ def main():
         model,
         None,
         None,
+        downsample,
         "s3://swarmfarm-vision/data_collection/sb-0014/images",
-        Path("/home/paperspace/data/svo-inference/251112_batch-9_pth"),
+        Path("/home/paperspace/data/svo-inference/251114_225236_batch-9_segnet-pth"),
         model_classes_file=model_classes_file,
         target_classes_file=target_classes_file,
         model_to_target_mapping_file=model_to_target_mapping_file,
