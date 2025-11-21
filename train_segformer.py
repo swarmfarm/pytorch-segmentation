@@ -278,7 +278,7 @@ def main(args):
     args.arch = "fcn_resnet18"
     args.dataset = "segformer"
     args.aux_loss = False  # TODO: See what this does exactly.
-    args.pretrained = False  # TODO: We should use pretrained model for most of the network.
+    args.pretrained = False  # Setting to False will still use a pretrained backbone.
     args.distributed = False
     args.resume = False
     args.test_only = False
@@ -291,6 +291,7 @@ def main(args):
     args.weight_decay = 1e-4  # TODO: Experiment with this.
     
     # Map from cityscapes names to swarmfarm names.
+    # TODO: Move to utils function in mlops.
     cs_sf_name_mapping = {}
     with open("/home/paperspace/data/segnet_training/cityscapes_swarmfarm_mapping.csv", 'r') as f:
         lines = f.readlines()
@@ -298,6 +299,7 @@ def main(args):
         cs_sf_name_mapping = {l[0]: l[1] for l in lines}
 
     # Read mappings from class indices to names and colours.
+    # TODO: Move to utils function in mlops.
     def read_names_colours(csv_file):
         names = {}
         colours = {}
@@ -312,6 +314,7 @@ def main(args):
     sf_names, sf_colours = read_names_colours("/home/paperspace/data/segnet_training/swarmfarm_classes.csv")
 
     # Map from cityscapes ids to swarmfarm ids.
+    # TODO: Move to utils function in mlops.
     sf_ids = {n: i for i, n in sf_names.items()}
     cs_sf_id_mapping = {}
     for cs_id, cs_name in cs_names.items():
@@ -322,14 +325,6 @@ def main(args):
     # Directory to store all training results.
     train_dir = Path(args.model_dir) / datetime.datetime.now().strftime("%y%m%d_%H%M%S")
     train_dir.mkdir(exist_ok=False)
-
-    
-
-    # if args.model_dir:
-    #     utils.mkdir(args.model_dir)
-
-    # utils.init_distributed_mode(args)
-    # print(args)
 
     device = torch.device(args.device)
 
@@ -367,7 +362,6 @@ def main(args):
     # dataset = dataset_batch11
     dataset = ConcatDataset([dataset_batch9, dataset_batch10, dataset_batch11])
 
-    # TODO: Add resize to half res at start.
     transforms_test = v2.Compose([
         v2.Resize((540, 960)),
         v2.ToDtype(torch.float32, scale=True),
