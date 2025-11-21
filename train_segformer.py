@@ -282,7 +282,7 @@ def main(args):
     args.distributed = False
     args.resume = False
     args.test_only = False
-    args.model_dir = "/home/paperspace/data/segnet_training"
+    args.model_dir = "/home/paperspace/data/segnet_training/training_runs"
 
     args.epochs = 200
     args.print_freq = 10
@@ -292,7 +292,7 @@ def main(args):
     
     # Map from cityscapes names to swarmfarm names.
     cs_sf_name_mapping = {}
-    with open("/home/paperspace/data/svo-inference/cityscapes_swarmfarm_mapping.csv", 'r') as f:
+    with open("/home/paperspace/data/segnet_training/cityscapes_swarmfarm_mapping.csv", 'r') as f:
         lines = f.readlines()
         lines = [l.strip().split(',') for l in lines if l.strip()]
         cs_sf_name_mapping = {l[0]: l[1] for l in lines}
@@ -308,8 +308,8 @@ def main(args):
             names = {int(l[0]): l[1] for l in lines}
             colours = {int(l[0]): (int(l[2]), int(l[3]), int(l[4])) for l in lines}
         return names, colours
-    cs_names, cs_colours = read_names_colours("/home/paperspace/data/svo-inference/cityscapes_classes.csv")
-    sf_names, sf_colours = read_names_colours("/home/paperspace/data/svo-inference/swarmfarm_classes.csv")
+    cs_names, cs_colours = read_names_colours("/home/paperspace/data/segnet_training/cityscapes_classes.csv")
+    sf_names, sf_colours = read_names_colours("/home/paperspace/data/segnet_training/swarmfarm_classes.csv")
 
     # Map from cityscapes ids to swarmfarm ids.
     sf_ids = {n: i for i, n in sf_names.items()}
@@ -333,57 +333,48 @@ def main(args):
 
     device = torch.device(args.device)
 
-    if 0:
-        # determine the desired resolution
-        resolution = (args.resolution, args.resolution)
+    resolution = (args.resolution, args.resolution)
 
-        if "width" in args and "height" in args:
-            resolution = (args.height, args.width)     
-        
-        # load the train and val datasets
-        dataset, num_classes = get_dataset(args.dataset, args.data, "train", get_transform(train=True, resolution=resolution), args.classes)
-        dataset_test, _ = get_dataset(args.dataset, args.data, "val", get_transform(train=False, resolution=resolution), args.classes)
-    else:
-        resolution = (args.resolution, args.resolution)
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
 
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
+    transforms = v2.Compose([
+        v2.Resize((540, 960)),
+        v2.RandomResizedCrop(size=256, antialias=True),
+        v2.RandomHorizontalFlip(p=0.5),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=mean, std=std),
+    ])
 
-        # TODO: Add resize to half res at start.
-        transforms = v2.Compose([
-            v2.Resize((540, 960)),
-            v2.RandomResizedCrop(size=256, antialias=True),
-            v2.RandomHorizontalFlip(p=0.5),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=mean, std=std),
-        ])
-        # dataset = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-11_tmp"), transforms=transforms)
+    # For batch 9, use annotated masks merged with Segformer masks.
+    dataset_batch9 = SegformerDataset(
+        Path("/home/paperspace/data/segnet_training/datasets/SWA-001-009-Video-Annotation-ds-98611a459fdd4846bb84ffe6febf98f8_2025-10-07_12-35-02_6763aa85eea8ffdac30ba12a_68e508f57175641d11102028"), 
+        mask_subdir="sf_mask_indices_merged",
+        transforms=transforms
+        )
+    
+    dataset_batch10 = SegformerDataset(
+        Path("/home/paperspace/data/segnet_training/datasets/SWA-001-010-Video-Annotation-ds-e9b42db94c3845b69f52dab8f488de82_2025-08-29_12-53-24_687a1b5ebb1789169c026b84_68b1a2c3e10c1211d10a8751"), 
+        mask_subdir="sf_mask_indices_merged",
+        transforms=transforms
+        )
+    
+    dataset_batch11 = SegformerDataset(
+        Path("/home/paperspace/data/segnet_training/datasets/SWA-001-011-Video-Annotation-ds-08e197904470459e8cb2ca76209d9ef0_2025-11-13_14-02-42_685e558c28a9857d720a6d94_6915e501bf9b9b256e013a83"), 
+        transforms=transforms
+        )
+    
+    # dataset = dataset_batch11
+    dataset = ConcatDataset([dataset_batch9, dataset_batch10, dataset_batch11])
 
-        # For batch 9, use annotated masks merged with Segformer masks.
-        dataset_batch9 = SegformerDataset(
-            Path("/home/paperspace/data/dataset-render/SWA-001-009-Video-Annotation-ds-98611a459fdd4846bb84ffe6febf98f8_2025-10-07_12-35-02_6763aa85eea8ffdac30ba12a_68e508f57175641d11102028"), 
-            mask_subdir="sf_mask_indices_merged",
-            transforms=transforms
-            )
-        
-        dataset_batch11 = SegformerDataset(
-            Path("/home/paperspace/data/dataset-render/SWA-001-011-Video-Annotation-ds-08e197904470459e8cb2ca76209d9ef0_2025-11-13_14-02-42_685e558c28a9857d720a6d94_6915e501bf9b9b256e013a83"), 
-            transforms=transforms
-            )
-        
-        # dataset = dataset_batch11
-        dataset = ConcatDataset([dataset_batch9, dataset_batch11])
+    # TODO: Add resize to half res at start.
+    transforms_test = v2.Compose([
+        v2.Resize((540, 960)),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(mean=mean, std=std),
+    ])
 
-        # TODO: Add resize to half res at start.
-        transforms_test = v2.Compose([
-            v2.Resize((540, 960)),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=mean, std=std),
-        ])
-
-        dataset_test = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-9_tmp"), transforms=transforms_test)
-
-        num_classes = 6  # 21 in the COCO pretrained model.
+    num_classes = 6  # 21 in the COCO pretrained model.
 
     train_sampler = None
     test_sampler = None
@@ -407,7 +398,10 @@ def main(args):
         data_loader = DataLoader(dataset, batch_size=args.batch_size, sampler=train_sampler, num_workers=args.workers)
         data_loader_test = DataLoader(dataset, batch_size=8, sampler=test_sampler, num_workers=args.workers)
     else:
+        # Create a separate test dataset.
         data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
+
+        dataset_test = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-9_tmp"), transforms=transforms_test)
         data_loader_test = DataLoader(dataset_test, batch_size=4, shuffle=True, num_workers=args.workers)
 
     print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
@@ -464,8 +458,6 @@ def main(args):
 
     output_sample(model, model_cs, device, train_dir, 999, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="test_epoch")
     output_sample(model, model_cs, device, train_dir, 999, data_loader, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="train_epoch")
-
-    return
 
     # training loop
     start_time = time.time()
