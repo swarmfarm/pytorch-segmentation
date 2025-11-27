@@ -21,6 +21,8 @@ from torch import nn
 import torchvision
 from torchvision.transforms import v2
 from torch.utils.data.sampler import SubsetRandomSampler
+from torch.utils.tensorboard import SummaryWriter
+
 from models import segmentation
 
 from datasets.coco_utils import get_coco
@@ -164,22 +166,33 @@ def criterion(inputs, target):
 #
 # evaluate model IoU (intersection over union)
 #
-def evaluate(model, data_loader, device, num_classes):
+def evaluate(model, criterion, data_loader, device, num_classes):
     model.eval()
     confmat = utils.ConfusionMatrix(num_classes)
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
+    val_loss = 0.0
+    num_samples = 0
     with torch.no_grad():
         for image, target in metric_logger.log_every(data_loader, 100, header):
             image, target = image.to(device), target.to(device)
             output = model(image)
-            output = output['out']
 
-            confmat.update(target.flatten(), output.argmax(1).flatten())
+            loss = criterion(output, target)
+            batch_size = image.shape[0]
+            val_loss += loss.item() * batch_size
+            num_samples += batch_size
+
+            output = output['out']
+            # Take argmax to determine predicted class at each pixel.
+            output_classes = output.argmax(1)
+            confmat.update(target.flatten(), output_classes.flatten())
 
         confmat.reduce_from_all_processes()
 
-    return confmat
+    avg_val_loss = val_loss / num_samples
+
+    return avg_val_loss, confmat
 
 
 def output_sample(model, model_pretrained, device, train_dir: Path, epoch: int, data_loader, num_batches, mean, std, class_colours, pretrained_sf_id_mapping, prefix):
@@ -189,6 +202,7 @@ def output_sample(model, model_pretrained, device, train_dir: Path, epoch: int, 
     with torch.no_grad():
 
         batch_num = 0
+        batch_imgs = []
         for image, target in data_loader:
             image, target = image.to(device), target.to(device)
             output = model(image)
@@ -239,9 +253,13 @@ def output_sample(model, model_pretrained, device, train_dir: Path, epoch: int, 
 
             cv2.imwrite(train_dir / f"{prefix}_epoch-{epoch:04d}_batch-{batch_num:04d}.png", batch_img)
 
+            batch_imgs.append(batch_img)
+
             batch_num += 1
             if batch_num >= num_batches:
                 break
+
+    return batch_imgs
 
 
 #
@@ -252,6 +270,8 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value}'))
     header = 'Epoch: [{}]'.format(epoch)
+    train_loss = 0.0
+    num_samples = 0
     for image, target in metric_logger.log_every(data_loader, print_freq, header):
         image, target = image.to(device), target.to(device)
         output = model(image)
@@ -265,6 +285,13 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
 
         metric_logger.update(loss=loss.item(), lr=optimizer.param_groups[0]["lr"])
 
+        batch_size = image.shape[0]
+        train_loss += loss.item() * batch_size
+        num_samples += batch_size
+
+    avg_train_loss = train_loss / num_samples
+    return avg_train_loss
+
 
 #
 # main training function
@@ -272,10 +299,10 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
 def main(args):
     args = argparse.Namespace()
     args.device = "cuda"
-    args.batch_size = 64
+    args.batch_size = 64  # 64 for resnet18, 16 for resnet50, 8 for resnet101
     args.resolution = 512
     args.workers = 8
-    args.arch = "fcn_resnet18"
+    args.arch = "fcn_resnet34"  # 18, 50, 101
     args.dataset = "segformer"
     args.aux_loss = False  # TODO: See what this does exactly.
     args.pretrained = False  # Setting to False will still use a pretrained backbone.
@@ -323,8 +350,14 @@ def main(args):
         cs_sf_id_mapping[cs_id] = sf_id
 
     # Directory to store all training results.
-    train_dir = Path(args.model_dir) / datetime.datetime.now().strftime("%y%m%d_%H%M%S")
+    run_name = datetime.datetime.now().strftime("%y%m%d_%H%M%S")
+    train_dir = Path(args.model_dir) / run_name
     train_dir.mkdir(exist_ok=False)
+
+    # Tensorboard logs
+    tensorboard_dir = Path(args.model_dir) / "tensorboard_runs" / run_name
+    tensorboard_dir.mkdir(exist_ok=True)
+    writer = SummaryWriter(log_dir=tensorboard_dir)
 
     device = torch.device(args.device)
 
@@ -341,21 +374,29 @@ def main(args):
         v2.Normalize(mean=mean, std=std),
     ])
 
+    # Replace "unknown" mask values, that may have been inserted during dataset creation.
+    class_mapping = {
+        10: 0,
+    }
+
     # For batch 9, use annotated masks merged with Segformer masks.
     dataset_batch9 = SegformerDataset(
         Path("/home/paperspace/data/segnet_training/datasets/SWA-001-009-Video-Annotation-ds-98611a459fdd4846bb84ffe6febf98f8_2025-10-07_12-35-02_6763aa85eea8ffdac30ba12a_68e508f57175641d11102028"), 
         mask_subdir="sf_mask_indices_merged",
+        class_mapping=class_mapping,
         transforms=transforms
         )
     
     dataset_batch10 = SegformerDataset(
-        Path("/home/paperspace/data/segnet_training/datasets/SWA-001-010-Video-Annotation-ds-e9b42db94c3845b69f52dab8f488de82_2025-08-29_12-53-24_687a1b5ebb1789169c026b84_68b1a2c3e10c1211d10a8751"), 
-        mask_subdir="sf_mask_indices_merged",
+        Path("/home/paperspace/data/segnet_training/datasets/SWA-001-010-Video-Annotation-ds-e9b42db94c3845b69f52dab8f488de82"), 
+        mask_subdir="sf_mask_indices",
+        class_mapping=class_mapping,
         transforms=transforms
         )
     
     dataset_batch11 = SegformerDataset(
         Path("/home/paperspace/data/segnet_training/datasets/SWA-001-011-Video-Annotation-ds-08e197904470459e8cb2ca76209d9ef0_2025-11-13_14-02-42_685e558c28a9857d720a6d94_6915e501bf9b9b256e013a83"), 
+        class_mapping=class_mapping,
         transforms=transforms
         )
     
@@ -395,12 +436,16 @@ def main(args):
         # Create a separate test dataset.
         data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
 
-        dataset_test = SegformerDataset(Path("/home/paperspace/data/svo-inference/251112_batch-9_tmp"), transforms=transforms_test)
+        dataset_test = SegformerDataset(
+            Path("/home/paperspace/data/svo-inference/251112_batch-9_tmp"), 
+            class_mapping=class_mapping,
+            transforms=transforms_test
+            )
         data_loader_test = DataLoader(dataset_test, batch_size=4, shuffle=True, num_workers=args.workers)
 
-    print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
+    # print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
     # print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))
-    print("=> training with model: {:s}".format(args.arch))
+    # print("=> training with model: {:s}".format(args.arch))
 
     # Pre-trained model for comparison.
     model_cs = None
@@ -428,7 +473,7 @@ def main(args):
 
     # eval-only mode
     if args.test_only:
-        confmat = evaluate(model, data_loader_test, device=device, num_classes=num_classes)
+        avg_val_loss, confmat = evaluate(model, criterion, data_loader_test, device=device, num_classes=num_classes)
         print(confmat)
         return
 
@@ -462,11 +507,26 @@ def main(args):
             train_sampler.set_epoch(epoch)
 
         # train the model over the next epoc
-        train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, device, epoch, args.print_freq)
+        avg_train_loss = train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, device, epoch, args.print_freq)
+        print(f"Average train loss for epoch {epoch}: {avg_train_loss:.4f}")
 
         # test the model on the val dataset
-        confmat = evaluate(model, data_loader_test, device=device, num_classes=num_classes)
+        avg_val_loss, confmat = evaluate(model, criterion, data_loader_test, device=device, num_classes=num_classes)
+        print(f"Average val loss for epoch {epoch}: {avg_val_loss:.4f}")
         print(confmat)
+
+        writer.add_scalar("loss/train", avg_train_loss, epoch)
+        writer.add_scalar("loss/val", avg_val_loss, epoch)
+        acc_global, acc, iou = confmat.compute()
+        acc = acc.cpu().numpy()
+        iou = iou.cpu().numpy()
+        miou = np.mean(iou)
+        writer.add_scalar("accuracy/val", acc_global, epoch)
+        writer.add_scalar("iou/val", miou, epoch)
+        for class_id, class_name in sf_names.items():
+            writer.add_scalar(f"accuracy/val_{class_name}", acc[class_id], epoch)
+            writer.add_scalar(f"iou/val_{class_name}", iou[class_id], epoch)
+        writer.flush()
 
         # save model checkpoint
         checkpoint_path = os.path.join(train_dir, 'model_{}.pth'.format(epoch))
@@ -478,7 +538,7 @@ def main(args):
                 'epoch': epoch,
                 'args': args,
                 'arch': args.arch,
-                'dataset': args.dataset,                
+                'dataset': args.dataset,
                 'num_classes': num_classes,
                 'resolution': resolution,
                 'accuracy': confmat.acc_global,
@@ -495,9 +555,18 @@ def main(args):
             print('saved best model to:  {:s}  ({:.3f}% mean IoU, {:.3f}% accuracy)'.format(best_path, best_IoU, confmat.acc_global))
 
         # Save some predictions.
-        output_sample(model, model_cs, device, train_dir, epoch, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="test")
+        test_samples = output_sample(model, model_cs, device, train_dir, epoch, data_loader_test, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="test")
         output_sample(model, model_cs, device, train_dir, epoch, data_loader, 1, mean, std, sf_colours, cs_sf_id_mapping, prefix="train")
 
+        if len(test_samples) > 1:
+            # Join the samples.
+            test_samples = np.concat(test_samples, axis=1)
+        else:
+            test_samples = test_samples[0]
+        print(test_samples.shape)
+        writer.add_image(f"images/val", test_samples[:, :, ::-1], epoch, dataformats='HWC')
+
+    writer.close()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

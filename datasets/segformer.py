@@ -2,6 +2,7 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
+from typing import Dict
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -12,8 +13,16 @@ from torchvision import tv_tensors
 
 class SegformerDataset(Dataset):
 
-    def __init__(self, dataset_dir: Path, image_subdir: str = "input_images", mask_subdir: str = "sf_mask_indices", transforms=None):
+    def __init__(
+        self, 
+        dataset_dir: Path, 
+        image_subdir: str = "input_images", 
+        mask_subdir: str = "sf_mask_indices", 
+        class_mapping: Dict[int, int] = None,
+        transforms=None, 
+        ):
         self.dataset_dir = dataset_dir
+        self.class_mapping = class_mapping
         self.transforms = transforms
         self.input_images_dir = dataset_dir / image_subdir
         self.mask_images_dir = dataset_dir / mask_subdir
@@ -24,6 +33,20 @@ class SegformerDataset(Dataset):
 
         # Remove the input dir, so we can also get masks.
         image_files = [f.relative_to(self.input_images_dir) for f in image_files]
+
+        # Remove images that don't have a mask.
+        # Get a list of masks.
+        mask_files = self.mask_images_dir.rglob(f"*.png")
+        mask_files = list(mask_files)
+        mask_files = [f.relative_to(self.mask_images_dir) for f in mask_files]
+        # Filter the image files.
+        filtered_image_files = []
+        for image_file in image_files:
+            if image_file in mask_files:
+                filtered_image_files.append(image_file)
+        print(f"Keeping {len(filtered_image_files)} of {len(image_files)} files in dataset.")
+        image_files = filtered_image_files
+
         self.image_files = image_files
 
     def __len__(self):
@@ -37,6 +60,11 @@ class SegformerDataset(Dataset):
         # Read images, removing alpha channel.
         input_image = decode_image(str(img_path))[:3, : , :]
         mask_image = decode_image(str(mask_path)).squeeze().to(torch.int64)
+
+        if self.class_mapping:
+            # Map classes in the mask.
+            for original_class, new_class in self.class_mapping.items():
+                mask_image[mask_image == original_class] = new_class
 
         input_image = tv_tensors.Image(input_image)
         mask_image = tv_tensors.Mask(mask_image)
