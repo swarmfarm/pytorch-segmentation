@@ -31,7 +31,7 @@ print('running on device ' + str(device))
 
 # load the model checkpoint
 print('loading checkpoint:  ' + opt.input)
-checkpoint = torch.load(opt.input)
+checkpoint = torch.load(opt.input, map_location='cpu', weights_only=False)
 
 arch = checkpoint['arch']
 num_classes = checkpoint['num_classes']
