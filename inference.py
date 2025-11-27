@@ -13,7 +13,7 @@ def main():
     args.batch_size = 4
     args.resolution = 512
     args.workers = 1
-    args.arch = "fcn_resnet18"
+    args.arch = "fcn_resnet34"  # 18, 50, 101
     args.dataset = "segformer"
     args.aux_loss = False  # TODO: See what this does exactly.
     args.pretrained = False  # TODO: We should use pretrained model for most of the network.
@@ -23,7 +23,10 @@ def main():
     args.model_dir = "/home/paperspace/data/segnet_training"
     num_classes = 6  # TODO: Get this from the below model classes file.
     #checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251118_011803/model_best.pth"
-    checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251121_025426/model_best.pth"
+    # checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251118_011803_resnet18/model_best.pth"
+    #checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251125_030424_resnet101/model_best.pth"
+    # checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251126_001729_resnet50/model_best.pth"
+    checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251126_081149_resnet34/model_best.pth"
 
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
@@ -67,7 +70,7 @@ def main():
             render_target_overlay=False,
             render_vis=False,
         )
-    elif 1:
+    elif 0:
         # Ray obstacles dataset.
         seg_inference_s3(
             model,
@@ -100,6 +103,26 @@ def main():
             interval=1,
             prefixes_file="/home/paperspace/data/segnet_training/batch-raycrop.txt",
             render_model_overlay=True,
+            render_vis=False,
+        )
+    elif 1:
+        # BB 202509 dataset.
+        seg_inference_s3(
+            model,
+            None,
+            None,
+            downsample,
+            "s3://swarmfarm-vision/data_collection/sb-0172/images",
+            image_dir=Path("/home/paperspace/data/segnet_training/results/251121_025426_batch-bb202509_segnet-pth/input_images"),
+            # out_dir=Path("/home/paperspace/data/segnet_training/results/251126_001729_resnet50_batch-bb202509_segnet-pth"),
+            out_dir=Path("/home/paperspace/data/segnet_training/results/tmp"),
+            model_classes_file=model_classes_file,
+            target_classes_file=target_classes_file,
+            model_to_target_mapping_file=model_to_target_mapping_file,
+            interval=1,
+            prefixes_file="/home/paperspace/data/segnet_training/batch-bb202509.txt",
+            render_model_overlay=True,
+            render_target_overlay=False,
             render_vis=False,
         )
 
