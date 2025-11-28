@@ -18,14 +18,12 @@ class SwarmfarmSegModel(SegModel):
             self, 
             arch: str,
             num_classes,
-            aux_loss,
-            pretrained, 
             checkpoint_file,
             mean,
             std,
             device: str = "cuda",
             ):
-        model = segmentation.__dict__[arch](num_classes=num_classes, aux_loss=aux_loss, pretrained=pretrained)
+        model = segmentation.__dict__[arch](num_classes=num_classes, aux_loss=False, pretrained=False)
         model.to(device)
         model.eval()
 

@@ -6,125 +6,116 @@ from sf_seg_model import SwarmfarmSegModel
 
 from swarmfarm_computer_vision.mlops.inference.segmentation.inference import seg_inference_s3
 
-def main():
 
-    args = argparse.Namespace()
-    args.device = "cuda"
-    args.batch_size = 4
-    args.resolution = 512
-    args.workers = 1
-    args.arch = "fcn_resnet34"  # 18, 50, 101
-    args.dataset = "segformer"
-    args.aux_loss = False  # TODO: See what this does exactly.
-    args.pretrained = False  # TODO: We should use pretrained model for most of the network.
-    args.distributed = False
-    args.resume = False
-    args.test_only = False
-    args.model_dir = "/home/paperspace/data/segnet_training"
-    num_classes = 6  # TODO: Get this from the below model classes file.
-    #checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251118_011803/model_best.pth"
-    # checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251118_011803_resnet18/model_best.pth"
-    #checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251125_030424_resnet101/model_best.pth"
-    # checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251126_001729_resnet50/model_best.pth"
-    checkpoint_file = "/home/paperspace/data/segnet_training/training_runs/251126_081149_resnet34/model_best.pth"
+model_names = [
+    "fcn_resnet18",
+    "fcn_resnet34",
+    "fcn_resnet50",
+    "fcn_resnet101",
+]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='PyTorch Segmentation Training')
+
+    parser.add_argument('-a', '--arch', metavar='ARCH', default='fcn_resnet18',
+                        choices=model_names,
+                        help='model architecture: ' +
+                        ' | '.join(model_names) +
+                        ' (default: fcn_resnet18)')
+    parser.add_argument('-f', '--model-file', help='path to .pth model file')
+    parser.add_argument('--s3-image-dir', metavar='DIR', help='path to where images are stored in S3')
+    parser.add_argument('--image-dir', metavar='DIR', help='path to where to store local input image files')
+    parser.add_argument('--out-dir', metavar='DIR', help='path to where to store output files')
+    parser.add_argument('--prefixes-file', help='path to a file containing prefixes defining what files to run inference on')
+    parser.add_argument('--downsample', default=2, type=int, metavar='C', help='number of times to downsample')
+    parser.add_argument('--classes', default=6, type=int, metavar='C', help='number of classes in your dataset (outputs)')
+    parser.add_argument('--device', default='cuda', help='device')
+
+    args = parser.parse_args()
+    return args
+
+
+def run_inference(args):
 
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
-
-    downsample = 2
 
     inference_data_dir = Path("/home/paperspace/data/segnet_training")
     # Definitions of the model and target classes.
     # This model has been trained to predict swarmfarm classes directly.
     model_classes_file = inference_data_dir /"swarmfarm_classes.csv"
-    target_classes_file = None
-    # File mapping from the model output classes to target classes.
-    model_to_target_mapping_file = None
 
     model = SwarmfarmSegModel(
         args.arch,
-        num_classes,
-        args.aux_loss,
-        False, 
-        checkpoint_file,
+        args.classes,
+        args.model_file,
         mean=mean,
         std=std,
         device=args.device,
     )
 
+    seg_inference_s3(
+        model,
+        None,
+        None,
+        args.downsample,
+        args.s3_image_dir,
+        image_dir=Path(args.image_dir),
+        out_dir=Path(args.out_dir),
+        model_classes_file=model_classes_file,
+        target_classes_file=None,
+        model_to_target_mapping_file=None,
+        interval=1,
+        prefixes_file=args.prefixes_file,
+        render_model_overlay=True,
+        render_target_overlay=False,
+        render_vis=False,
+    )
+
+
+def main():
+    args = parse_args()
+
     if 0:
-        seg_inference_s3(
-            model,
-            None,
-            None,
-            downsample,
-            "s3://swarmfarm-vision/data_collection/sb-0014/images",
-            # Path("/home/paperspace/data/svo-inference/251114_225236_batch-9_segnet-pth"),
-            Path("/home/paperspace/data/segnet_training/results/251121_025426_batch-9_segnet-pth"),
-            model_classes_file=model_classes_file,
-            target_classes_file=target_classes_file,
-            model_to_target_mapping_file=model_to_target_mapping_file,
-            interval=1,
-            prefixes_file="/home/paperspace/data/segnet_training/batch-9.txt",
-            render_model_overlay=True,
-            render_target_overlay=False,
-            render_vis=False,
-        )
-    elif 0:
-        # Ray obstacles dataset.
-        seg_inference_s3(
-            model,
-            None,
-            None,
-            downsample,
-            "s3://swarmfarm-vision/data_collection/sb-0026/images",
-            Path("/home/paperspace/data/segnet_training/results/251121_025426_batch-rayobstacles_segnet-pth"),
-            model_classes_file=model_classes_file,
-            target_classes_file=target_classes_file,
-            model_to_target_mapping_file=model_to_target_mapping_file,
-            interval=1,
-            prefixes_file="/home/paperspace/data/segnet_training/batch-rayobstacles.txt",
-            render_model_overlay=True,
-            render_target_overlay=False,
-            render_vis=False,
-        )
-    elif 0:
-        # Ray crops dataset.
-        seg_inference_s3(
-            model,
-            None,
-            None,
-            downsample,
-            "s3://swarmfarm-vision/data_collection/sb-0026/images",
-            Path("/home/paperspace/data/segnet_training/results/251121_025426_batch-raycrop_segnet-pth"),
-            model_classes_file=model_classes_file,
-            target_classes_file=target_classes_file,
-            model_to_target_mapping_file=model_to_target_mapping_file,
-            interval=1,
-            prefixes_file="/home/paperspace/data/segnet_training/batch-raycrop.txt",
-            render_model_overlay=True,
-            render_vis=False,
-        )
-    elif 1:
-        # BB 202509 dataset.
-        seg_inference_s3(
-            model,
-            None,
-            None,
-            downsample,
-            "s3://swarmfarm-vision/data_collection/sb-0172/images",
-            image_dir=Path("/home/paperspace/data/segnet_training/results/251121_025426_batch-bb202509_segnet-pth/input_images"),
-            # out_dir=Path("/home/paperspace/data/segnet_training/results/251126_001729_resnet50_batch-bb202509_segnet-pth"),
-            out_dir=Path("/home/paperspace/data/segnet_training/results/tmp"),
-            model_classes_file=model_classes_file,
-            target_classes_file=target_classes_file,
-            model_to_target_mapping_file=model_to_target_mapping_file,
-            interval=1,
-            prefixes_file="/home/paperspace/data/segnet_training/batch-bb202509.txt",
-            render_model_overlay=True,
-            render_target_overlay=False,
-            render_vis=False,
-        )
+        # Overwrite args for testing.
+
+        args.device = "cuda"
+        args.arch = "fcn_resnet50"  # 18, 34, 50, 101
+
+        #args.model_file = "/home/paperspace/data/segnet_training/training_runs/251118_011803/model_best.pth"
+        # args.model_file = "/home/paperspace/data/segnet_training/training_runs/251118_011803_resnet18/model_best.pth"
+        #args.model_file = "/home/paperspace/data/segnet_training/training_runs/251125_030424_resnet101/model_best.pth"
+        args.model_file = "/home/paperspace/data/segnet_training/training_runs/251126_001729_resnet50/model_best.pth"
+        # args.model_file = "/home/paperspace/data/segnet_training/training_runs/251126_081149_resnet34/model_best.pth"
+        args.downsample = 2
+
+        if 0:
+            # Batch 9
+            args.s3_image_dir = "s3://swarmfarm-vision/data_collection/sb-0014/images"
+            args.image_dir = "/home/paperspace/data/segnet_training/results/tmp/input_images"
+            args.out_dir = "/home/paperspace/data/segnet_training/results/tmp"
+            args.prefixes_file = "/home/paperspace/data/segnet_training/batch-9.txt"
+        elif 0:
+            # Ray obstacles dataset.
+            args.s3_image_dir = "s3://swarmfarm-vision/data_collection/sb-0026/images"
+            args.image_dir = "/home/paperspace/data/segnet_training/datasets/batch-rayobstacles/input_images"
+            args.out_dir = "/home/paperspace/data/segnet_training/results/tmp"
+            args.prefixes_file = "/home/paperspace/data/segnet_training/batch-rayobstacles.txt"
+        elif 0:
+            # Ray crop dataset.
+            args.s3_image_dir = "s3://swarmfarm-vision/data_collection/sb-0026/images"
+            args.image_dir = "/home/paperspace/data/segnet_training/datasets/batch-raycrop/input_images"
+            args.out_dir = "/home/paperspace/data/segnet_training/results/tmp"
+            args.prefixes_file = "/home/paperspace/data/segnet_training/batch-raycrop.txt"
+        elif 1:
+            # BB 202509 dataset.
+            args.s3_image_dir = "s3://swarmfarm-vision/data_collection/sb-0172/images"
+            args.image_dir = "/home/paperspace/data/segnet_training/datasets/batch-bb202509/input_images"
+            args.out_dir = "/home/paperspace/data/segnet_training/results/tmp"
+            args.prefixes_file = "/home/paperspace/data/segnet_training/batch-bb202509.txt"
+
+    run_inference(args)
 
 
 if __name__ == '__main__':
