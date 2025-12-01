@@ -1,13 +1,6 @@
-#
-# Note -- this training script is tweaked from the original version at:
-#
-#           https://github.com/pytorch/vision/tree/v0.3.0/references/segmentation
-#
-#
 import argparse
 import datetime
 import time
-import math
 import os
 import shutil
 from pathlib import Path
@@ -15,8 +8,7 @@ import numpy as np
 import cv2
 
 import torch
-import torch.utils.data
-from torch.utils.data import Dataset, DataLoader, ConcatDataset
+from torch.utils.data import DataLoader, ConcatDataset
 from torch import nn
 import torchvision
 from torchvision.transforms import v2
@@ -38,11 +30,14 @@ from datasets.segformer import SegformerDataset
 import transforms as T
 import utils
 
+
 torch.manual_seed(123)
+
 
 model_names = sorted(name for name in segmentation.__dict__
     if name.islower() and not name.startswith("__")
     and callable(segmentation.__dict__[name]))
+
 
 #
 # parse command-line arguments
@@ -50,8 +45,8 @@ model_names = sorted(name for name in segmentation.__dict__
 def parse_args():
     parser = argparse.ArgumentParser(description='PyTorch Segmentation Training')
 
-    parser.add_argument('data', metavar='DIR', help='path to dataset')
-    parser.add_argument('--dataset', default='voc', help='dataset type: voc, voc_aug, coco, cityscapes, deepscene, mhp, nyu, sun, custom (default: voc)')
+    # parser.add_argument('data', metavar='DIR', help='path to dataset')
+    # parser.add_argument('--dataset', default='voc', help='dataset type: voc, voc_aug, coco, cityscapes, deepscene, mhp, nyu, sun, custom (default: voc)')
     parser.add_argument('-a', '--arch', metavar='ARCH', default='fcn_resnet18',
                         choices=model_names,
                         help='model architecture: ' +
@@ -62,10 +57,6 @@ def parse_args():
     parser.add_argument('--resolution', default=320, type=int, metavar='N',
                         help='NxN resolution used for scaling the training dataset (default: 320x320) '
                          'to specify a non-square resolution, use the --width and --height options')
-    parser.add_argument('--width', default=argparse.SUPPRESS, type=int, metavar='X',
-                        help='desired width of the training dataset. if this option is not set, --resolution will be used')
-    parser.add_argument('--height', default=argparse.SUPPRESS, type=int, metavar='Y',
-                        help='desired height of the training dataset. if this option is not set, --resolution will be used')
     parser.add_argument('--device', default='cuda', help='device')
     parser.add_argument('-b', '--batch-size', default=4, type=int)
     parser.add_argument('--epochs', default=30, type=int, metavar='N', help='number of total epochs to run')
@@ -82,11 +73,6 @@ def parse_args():
     parser.add_argument('--resume', default='', help='resume from checkpoint')
     parser.add_argument("--test-only", dest="test_only", help="Only test the model", action="store_true")
     parser.add_argument("--pretrained", dest="pretrained", help="Use pre-trained models (only supported for fcn_resnet101)", action="store_true")
-
-    # distributed training parameters
-    parser.add_argument('--world-size', default=1, type=int,
-                        help='number of distributed processes')
-    parser.add_argument('--dist-url', default='env://', help='url used to set up distributed training')
 
     args = parser.parse_args()
     return args
@@ -197,8 +183,6 @@ def evaluate(model, criterion, data_loader, device, num_classes):
 
 def output_sample(model, model_pretrained, device, train_dir: Path, epoch: int, data_loader, num_batches, mean, std, class_colours, pretrained_sf_id_mapping, prefix):
 
-    # epoch_dir = train_dir / f"epoch_{epoch:04d}"
-    # epoch_dir.mkdir(exist_ok=True)
     with torch.no_grad():
 
         batch_num = 0
@@ -296,26 +280,7 @@ def train_one_epoch(model, criterion, optimizer, data_loader, lr_scheduler, devi
 #
 # main training function
 #
-def main(args):
-    args = argparse.Namespace()
-    args.device = "cuda"
-    args.batch_size = 64  # 64 for resnet18, 16 for resnet50, 8 for resnet101
-    args.resolution = 512
-    args.workers = 8
-    args.arch = "fcn_resnet34"  # 18, 50, 101
-    args.dataset = "segformer"
-    args.aux_loss = False  # TODO: See what this does exactly.
-    args.pretrained = False  # Setting to False will still use a pretrained backbone.
-    args.distributed = False
-    args.resume = False
-    args.test_only = False
-    args.model_dir = "/home/paperspace/data/segnet_training/training_runs"
-
-    args.epochs = 200
-    args.print_freq = 10
-    args.lr = 0.01  # TODO: Experiment with this.
-    args.momentum = 0.9  # TODO: Experiment with this.
-    args.weight_decay = 1e-4  # TODO: Experiment with this.
+def train(args):
     
     # Map from cityscapes names to swarmfarm names.
     # TODO: Move to utils function in mlops.
@@ -400,14 +365,7 @@ def main(args):
         transforms=transforms
         )
     
-    # dataset = dataset_batch11
     dataset = ConcatDataset([dataset_batch9, dataset_batch10, dataset_batch11])
-
-    transforms_test = v2.Compose([
-        v2.Resize((540, 960)),
-        v2.ToDtype(torch.float32, scale=True),
-        v2.Normalize(mean=mean, std=std),
-    ])
 
     num_classes = 6  # 21 in the COCO pretrained model.
 
@@ -436,16 +394,18 @@ def main(args):
         # Create a separate test dataset.
         data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers)
 
+        transforms_test = v2.Compose([
+            v2.Resize((540, 960)),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=mean, std=std),
+        ])
+
         dataset_test = SegformerDataset(
             Path("/home/paperspace/data/svo-inference/251112_batch-9_tmp"), 
             class_mapping=class_mapping,
             transforms=transforms_test
             )
         data_loader_test = DataLoader(dataset_test, batch_size=4, shuffle=True, num_workers=args.workers)
-
-    # print("=> training with dataset: '{:s}' (train={:d}, val={:d})".format(args.dataset, len(dataset), len(dataset_test)))
-    # print("=> training with resolution: {:d}x{:d}, {:d} classes".format(resolution[1], resolution[0], num_classes))
-    # print("=> training with model: {:s}".format(args.arch))
 
     # Pre-trained model for comparison.
     model_cs = None
@@ -573,7 +533,26 @@ def main(args):
     print('Training time {}'.format(total_time_str))
 
 
-if __name__ == "__main__":
-    args = None#parse_args()
-    main(args)
+def main():
+    args = parse_args()
+    
+    if 1:
+        args.device = "cuda"
+        args.batch_size = 64  # 64 for resnet18, 16 for resnet50, 8 for resnet101
+        args.resolution = 512
+        args.workers = 8
+        args.arch = "fcn_resnet34"  # 18, 50, 101
+        args.dataset = "segformer"
+        args.aux_loss = False
+        args.pretrained = False  # Setting to False will still use a pretrained backbone.
+        args.distributed = False
+        args.resume = False
+        args.test_only = False
+        args.model_dir = "/home/paperspace/data/segnet_training/training_runs"
+        args.epochs = 200
 
+    train(args)
+
+
+if __name__ == "__main__":
+    main()
