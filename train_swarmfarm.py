@@ -10,24 +10,14 @@ import cv2
 import torch
 from torch.utils.data import DataLoader, ConcatDataset
 from torch import nn
-import torchvision
 from torchvision.transforms import v2
 from torch.utils.data.sampler import SubsetRandomSampler
 from torch.utils.tensorboard import SummaryWriter
 
 from models import segmentation
 
-from datasets.coco_utils import get_coco
-from datasets.cityscapes_utils import get_cityscapes
-from datasets.deepscene import DeepSceneSegmentation
-from datasets.custom_dataset import CustomSegmentation
-from datasets.mhp import MHPSegmentation
-from datasets.nyu import NYUDepth
-from datasets.sun import SunRGBDSegmentation
-
 from datasets.swarmfarm import SwarmfarmDataset
 
-import transforms as T
 import utils
 
 
@@ -76,63 +66,6 @@ def parse_args():
 
     args = parser.parse_args()
     return args
-
-
-#
-# load desired dataset
-#
-def get_dataset(name, path, image_set, transform, num_classes):
-    def sbd(*args, **kwargs):
-        return torchvision.datasets.SBDataset(*args, mode='segmentation', **kwargs)
-    paths = {
-        "voc": (path, torchvision.datasets.VOCSegmentation, num_classes),
-        "voc_aug": (path, sbd, num_classes),
-        "coco": (path, get_coco, num_classes),
-        "cityscapes": (path, get_cityscapes, num_classes),
-        "deepscene": (path, DeepSceneSegmentation, 5),
-        "mhp": (path, MHPSegmentation, num_classes),
-        "nyu": (path, NYUDepth, num_classes),
-        "sun": (path, SunRGBDSegmentation, num_classes),
-        "custom": (path, CustomSegmentation, num_classes)
-    }
-    p, ds_fn, num_classes = paths[name]
-
-    ds = ds_fn(p, image_set=image_set, transforms=transform)
-    return ds, num_classes
-
-
-#
-# create data transform
-#
-def get_transform(train, resolution):
-    transforms = []
-
-    # if square resolution, perform some aspect cropping
-    # otherwise, resize to the resolution as specified
-    if resolution[0] == resolution[1]:
-        base_size = resolution[0] + 32 #520
-        crop_size = resolution[0]      #480
-
-        min_size = int((0.5 if train else 1.0) * base_size)
-        max_size = int((2.0 if train else 1.0) * base_size)
-
-        transforms.append(T.RandomResize(min_size, max_size))
-
-        # during training mode, perform some data randomization
-        if train:
-            transforms.append(T.RandomHorizontalFlip(0.5))
-            transforms.append(T.RandomCrop(crop_size))
-    else:
-        transforms.append(T.Resize(resolution))
-
-        if train:
-            transforms.append(T.RandomHorizontalFlip(0.5))
-
-    transforms.append(T.ToTensor())
-    transforms.append(T.Normalize(mean=[0.485, 0.456, 0.406],
-                                  std=[0.229, 0.224, 0.225]))
-
-    return T.Compose(transforms)
 
 
 #
