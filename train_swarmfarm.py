@@ -25,7 +25,7 @@ from datasets.mhp import MHPSegmentation
 from datasets.nyu import NYUDepth
 from datasets.sun import SunRGBDSegmentation
 
-from datasets.segformer import SegformerDataset
+from datasets.swarmfarm import SwarmfarmDataset
 
 import transforms as T
 import utils
@@ -345,21 +345,21 @@ def train(args):
     }
 
     # For batch 9, use annotated masks merged with Segformer masks.
-    dataset_batch9 = SegformerDataset(
+    dataset_batch9 = SwarmfarmDataset(
         Path("/home/paperspace/data/segnet_training/datasets/SWA-001-009-Video-Annotation-ds-98611a459fdd4846bb84ffe6febf98f8_2025-10-07_12-35-02_6763aa85eea8ffdac30ba12a_68e508f57175641d11102028"), 
         mask_subdir="sf_mask_indices_merged",
         class_mapping=class_mapping,
         transforms=transforms
         )
     
-    dataset_batch10 = SegformerDataset(
+    dataset_batch10 = SwarmfarmDataset(
         Path("/home/paperspace/data/segnet_training/datasets/SWA-001-010-Video-Annotation-ds-e9b42db94c3845b69f52dab8f488de82"), 
         mask_subdir="sf_mask_indices",
         class_mapping=class_mapping,
         transforms=transforms
         )
     
-    dataset_batch11 = SegformerDataset(
+    dataset_batch11 = SwarmfarmDataset(
         Path("/home/paperspace/data/segnet_training/datasets/SWA-001-011-Video-Annotation-ds-08e197904470459e8cb2ca76209d9ef0_2025-11-13_14-02-42_685e558c28a9857d720a6d94_6915e501bf9b9b256e013a83"), 
         class_mapping=class_mapping,
         transforms=transforms
@@ -400,7 +400,7 @@ def train(args):
             v2.Normalize(mean=mean, std=std),
         ])
 
-        dataset_test = SegformerDataset(
+        dataset_test = SwarmfarmDataset(
             Path("/home/paperspace/data/svo-inference/251112_batch-9_tmp"), 
             class_mapping=class_mapping,
             transforms=transforms_test
@@ -542,7 +542,7 @@ def main():
         args.resolution = 512
         args.workers = 8
         args.arch = "fcn_resnet34"  # 18, 50, 101
-        args.dataset = "segformer"
+        args.dataset = "swarmfarm"
         args.aux_loss = False
         args.pretrained = False  # Setting to False will still use a pretrained backbone.
         args.distributed = False

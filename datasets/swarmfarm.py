@@ -11,7 +11,7 @@ from torchvision.transforms import v2
 from torchvision import tv_tensors
 
 
-class SegformerDataset(Dataset):
+class SwarmfarmDataset(Dataset):
 
     def __init__(
         self, 
@@ -89,7 +89,7 @@ def main():
         v2.Normalize(mean=mean, std=std),
     ])
 
-    dataset = SegformerDataset(Path("/home/nvidia/data/segformer_datasets/251112"), transforms=transforms)
+    dataset = SwarmfarmDataset(Path("/home/nvidia/data/segformer_datasets/251112"), transforms=transforms)
 
     dataloader = DataLoader(dataset, batch_size=4, shuffle=False, num_workers=1)
 
