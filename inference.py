@@ -77,7 +77,7 @@ def run_inference(args):
 def main():
     args = parse_args()
 
-    if 0:
+    if 1:
         # Overwrite args for testing.
 
         args.device = "cuda"
@@ -108,12 +108,18 @@ def main():
             args.image_dir = "/home/paperspace/data/segnet_training/datasets/batch-raycrop/input_images"
             args.out_dir = "/home/paperspace/data/segnet_training/results/tmp"
             args.prefixes_file = "/home/paperspace/data/segnet_training/batch-raycrop.txt"
-        elif 1:
+        elif 0:
             # BB 202509 dataset.
             args.s3_image_dir = "s3://swarmfarm-vision/data_collection/sb-0172/images"
             args.image_dir = "/home/paperspace/data/segnet_training/datasets/batch-bb202509/input_images"
             args.out_dir = "/home/paperspace/data/segnet_training/results/tmp"
             args.prefixes_file = "/home/paperspace/data/segnet_training/batch-bb202509.txt"
+        elif 1:
+            # BB 202509 dataset small.
+            args.s3_image_dir = "s3://swarmfarm-vision/data_collection/sb-0172/images"
+            args.image_dir = "/home/paperspace/data/segnet_training/datasets/batch-bb202509/input_images"
+            args.out_dir = "/home/paperspace/data/segnet_training/results/tmp"
+            args.prefixes_file = "/home/paperspace/data/segnet_training/batch-bb202509_small.txt"
 
     run_inference(args)
 
